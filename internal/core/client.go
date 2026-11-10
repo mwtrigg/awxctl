@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -107,6 +108,8 @@ func NewClient(ctx *config.Context, opts Options) (*Client, error) {
 		return nil, err
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// A host that does not answer fails in seconds, not after the request timeout.
+	tr.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	if ctx.TLSVerify != nil && !*ctx.TLSVerify {
 		tr.TLSClientConfig.InsecureSkipVerify = true
