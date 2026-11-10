@@ -1,0 +1,16 @@
+# Author
+.author
+
+# awxctl binary (root-level only)
+/awxctl
+/awxctl.exe
+
+# build output
+dist/
+
+# environment overrides
+.env
+
+
+# agent worktrees
+.claude/worktrees/
