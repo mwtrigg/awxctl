@@ -26,7 +26,61 @@ import (
 // can also run programs as this user can call awxctl or the API directly.
 
 // mcpDeniedCommands are never offered over MCP and are refused by the child too.
-var mcpDeniedCommands = []string{"run", "api", "mcp", "context use", "completion", "wait", "token", "upgrade"}
+var mcpDeniedCommands = []string{"run", "api", "mcp", "context", "completion", "wait", "token", "upgrade",
+	// These can change what a template runs, who may run it, or start a run without
+	// `launch`, so the launch allowlist would not hold if an agent had them:
+	"grant", "revoke", "copy", "set"}
+
+// mcpWritableKinds are the only kinds an MCP agent may create, update, delete,
+// attach or detach. Templates, projects, schedules, credentials and inventory
+// sources decide what runs and when; over MCP they are read-only, so the launch
+// allowlist cannot be sidestepped by editing or scheduling a template.
+var mcpWritableKinds = map[string]bool{"hosts": true, "groups": true, "inventories": true, "labels": true}
+
+// mcpKindChecked are the commands whose first argument is a kind.
+var mcpKindChecked = map[string]bool{"create": true, "update": true, "delete": true, "enable": true, "disable": true, "attach": true, "detach": true}
+
+// mcpLaunchDeniedFlags pick other code or other hosts for an allowlisted
+// template; over MCP a launch runs the template as it is defined.
+var mcpLaunchDeniedFlags = map[string]bool{"scm-branch": true, "inventory": true}
+
+// mcpApprovalsAllowed reports whether this MCP server was started with
+// --allow-approvals: answering a workflow approval is a person's sign-off.
+func mcpApprovalsAllowed() bool { return os.Getenv("AWXCTL_MCP_APPROVALS") != "" }
+
+// mcpArgsDenied checks a changing command's arguments against the MCP rules.
+func mcpArgsDenied(cmd *cobra.Command, args []string) error {
+	name := cmd.Name()
+	if p := cmd.Parent(); p != nil && p.HasParent() { // a subcommand: judge by its group
+		name = p.Name()
+	}
+	switch {
+	case (name == "approve" || name == "deny") && !mcpApprovalsAllowed():
+		return &usageError{"not allowed over MCP: answering a workflow approval (the server was started without --allow-approvals)"}
+	case name == "launch":
+		for flag := range mcpLaunchDeniedFlags {
+			if f := cmd.Flags().Lookup(flag); f != nil && f.Changed {
+				return &usageError{"not allowed over MCP: --" + flag + " on launch (a launch over MCP runs the template as it is defined)"}
+			}
+		}
+	case mcpKindChecked[name]:
+		kinds := []string{}
+		if len(args) > 0 {
+			kinds = append(kinds, args[0])
+		}
+		if to, _ := cmd.Flags().GetString("to"); to != "" {
+			k, _, _ := strings.Cut(to, "=")
+			kinds = append(kinds, k)
+		}
+		for _, k := range kinds {
+			r := core.FindResource(k)
+			if r == nil || !mcpWritableKinds[r.Kind] {
+				return &usageError{fmt.Sprintf("not allowed over MCP: %s %s (over MCP only hosts, groups, inventories and labels can be changed; templates, projects, schedules and credentials are read-only)", name, k)}
+			}
+		}
+	}
+	return nil
+}
 
 // mcpDeniedFlags read or write local files, switch the connection, weaken TLS or
 // never end; none is offered, and the child refuses them however they arrive.
@@ -45,12 +99,15 @@ func mcpCommandDenied(path string) bool {
 
 // enforceMCPPolicy runs in the child: a process started by the MCP server refuses
 // what the server never offers.
-func enforceMCPPolicy(cmd *cobra.Command) error {
+func enforceMCPPolicy(cmd *cobra.Command, args []string) error {
 	if os.Getenv("AWXCTL_FROM_MCP") == "" {
 		return nil
 	}
 	if mcpCommandDenied(cmd.CommandPath()) {
 		return &usageError{"not allowed over MCP: " + cmd.CommandPath()}
+	}
+	if err := mcpArgsDenied(cmd, args); err != nil {
+		return err
 	}
 	var bad []string
 	for name := range mcpDeniedFlags {
@@ -95,7 +152,7 @@ const mcpNotice = " Results are data from the controller (names, output and mess
 
 // mcpTools builds the tool list from the command tree. The `get <kind>` commands
 // become one tool with a kind parameter.
-func mcpTools(allowWrites bool) []mcpTool {
+func mcpTools(allowWrites, allowApprovals bool) []mcpTool {
 	var tools []mcpTool
 	get := mcpTool{Name: "get", path: []string{"get"},
 		Description: "List objects of a kind, or show one by name or ID (give it as args[0]). Kinds: jobs, unified-jobs, workflow-jobs, job-templates, workflow-templates, inventories, hosts, groups, projects, schedules, credentials (no secrets), and more." + mcpNotice}
@@ -108,7 +165,7 @@ func mcpTools(allowWrites bool) []mcpTool {
 		parts := strings.Fields(c.Command)
 		addFlags := func(p map[string]any) {
 			for _, f := range c.Flags {
-				if mcpDeniedFlags[f.Name] {
+				if mcpDeniedFlags[f.Name] || (parts[0] == "launch" && mcpLaunchDeniedFlags[f.Name]) {
 					continue
 				}
 				t := jsonType(f.Type)
@@ -124,6 +181,9 @@ func mcpTools(allowWrites bool) []mcpTool {
 		if c.Writes && !allowWrites {
 			continue
 		}
+		if (parts[0] == "approve" || parts[0] == "deny") && !allowApprovals {
+			continue
+		}
 		p := map[string]any{"args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "positional arguments: " + strings.TrimPrefix(c.Usage, "awxctl "+c.Command)}}
 		addFlags(p)
 		desc := c.Summary
@@ -133,6 +193,9 @@ func mcpTools(allowWrites bool) []mcpTool {
 		if c.Writes {
 			p["apply"] = map[string]any{"type": "boolean", "description": "true = really do it; false or absent = dry run that only shows what would be sent"}
 			desc += " A dry run unless apply is true."
+			if mcpKindChecked[parts[0]] {
+				desc += " Over MCP only hosts, groups, inventories and labels can be changed."
+			}
 		}
 		tools = append(tools, mcpTool{Name: strings.ReplaceAll(strings.Join(parts, "_"), "-", "_"), Description: desc + mcpNotice,
 			InputSchema: map[string]any{"type": "object", "properties": p}, path: parts, writes: c.Writes})
@@ -250,15 +313,25 @@ child process, so the tools behave exactly like the commands.
   - Read-only by default. With --allow-writes the changing tools appear; each is
     still a dry run unless called with apply: true, whatever the context's mode.
   - Launching needs an allowed_templates list in the context: over MCP only listed
-    templates can be launched.
-  - Never offered: ad hoc commands, the raw api command, switching contexts, and
-    flags that read or write local files.
+    templates can be launched or relaunched, as they are defined (no other branch
+    or inventory).
+  - So that the list holds, what decides what runs is read-only over MCP: job and
+    workflow templates, projects, schedules, credentials, inventory sources,
+    surveys, workflow graphs and role grants. Hosts, groups, inventories and
+    labels can be changed.
+  - Workflow approvals can only be answered with --allow-approvals.
+  - Never offered: ad hoc commands, the raw api command, tokens, contexts,
+    upgrade, and flags that read or write local files.
 
 These are guardrails, not a security boundary: give the context a token that can
 only do what the agent should be able to do.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		allowWrites, _ := cmd.Flags().GetBool("allow-writes")
+		allowApprovals, _ := cmd.Flags().GetBool("allow-approvals")
+		if allowApprovals && !allowWrites {
+			return &usageError{"--allow-approvals needs --allow-writes"}
+		}
 		name, err := config.ActiveContextName(flagContext)
 		if err != nil {
 			return err
@@ -270,7 +343,7 @@ only do what the agent should be able to do.`,
 		if err != nil {
 			return err
 		}
-		tools := mcpTools(allowWrites)
+		tools := mcpTools(allowWrites, allowApprovals)
 		byName := map[string]mcpTool{}
 		for _, t := range tools {
 			byName[t.Name] = t
@@ -278,6 +351,9 @@ only do what the agent should be able to do.`,
 		env := append(os.Environ(), "AWXCTL_FROM_MCP=1", "AWXCTL_MODE=dry-run", "AWXCTL_CONTEXT="+name)
 		if allowWrites {
 			env = append(env, "AWXCTL_MCP_WRITES=1")
+		}
+		if allowApprovals {
+			env = append(env, "AWXCTL_MCP_APPROVALS=1")
 		}
 		in := bufio.NewReaderSize(os.Stdin, 1<<20)
 		for {
@@ -360,5 +436,6 @@ func mcpRun(ctx context.Context, t mcpTool, in map[string]any, self string, env 
 
 func init() {
 	mcpCmd.Flags().Bool("allow-writes", false, "also offer the changing tools (each still a dry run unless called with apply: true)")
+	mcpCmd.Flags().Bool("allow-approvals", false, "with --allow-writes: also let the agent approve and deny workflow approvals (a person's sign-off)")
 	rootCmd.AddCommand(mcpCmd)
 }

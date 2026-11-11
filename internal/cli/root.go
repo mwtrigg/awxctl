@@ -46,11 +46,11 @@ Settings: flags override AWXCTL_* environment variables, which override
 ~/.config/awxctl/config.yaml.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if flagYes {
 			flagApply = true
 		}
-		if err := enforceMCPPolicy(cmd); err != nil {
+		if err := enforceMCPPolicy(cmd, args); err != nil {
 			return err
 		}
 		output.Raw = flagRaw

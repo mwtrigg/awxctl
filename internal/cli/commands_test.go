@@ -285,7 +285,7 @@ func TestMCPToolsAndArgv(t *testing.T) {
 		}
 		return " " + strings.Join(n, " ") + " "
 	}
-	read, all := names(mcpTools(false)), names(mcpTools(true))
+	read, all := names(mcpTools(false, false)), names(mcpTools(true, false))
 	for _, never := range []string{" run_command ", " api ", " context_use ", " mcp ", " wait "} {
 		if strings.Contains(all, never) {
 			t.Errorf("%s must never be an MCP tool", never)
@@ -302,7 +302,7 @@ func TestMCPToolsAndArgv(t *testing.T) {
 		}
 	}
 	var get, launch mcpTool
-	for _, tl := range mcpTools(true) {
+	for _, tl := range mcpTools(true, false) {
 		switch tl.Name {
 		case "get":
 			get = tl
@@ -468,5 +468,110 @@ func TestOneInventoryShowsItsSources(t *testing.T) {
 	out, _, _ = runCLI(t, env, "get", "inventories")
 	if strings.Contains(out, `"sources"`) || len(srv.Requests())-before > 3 {
 		t.Errorf("the list must not look up sources: %d requests", len(srv.Requests())-before)
+	}
+}
+
+func TestValuesKeepTheirText(t *testing.T) {
+	for in, want := range map[string]any{
+		"1.10": "1.10", "1e3": "1e3", "007": "007", "12345678901234567891": "12345678901234567891", "+5": "+5", " 5": " 5", "0x10": "0x10", "NaN": "NaN", "1.": "1.",
+		"5": int64(5), "-3": int64(-3), "2.5": 2.5, "0": int64(0), "true": true, "false": false, "null": nil, "hello": "hello", "": "", "\"quoted\"": "\"quoted\"",
+	} {
+		if got := parseValue(in); got != want {
+			t.Errorf("parseValue(%q) = %#v, want %#v", in, got, want)
+		}
+	}
+	if v, ok := parseValue(`{"n": 12345678901234567891, "v": 1.10}`).(map[string]any); !ok || mustJSONText(v) != `{"n":12345678901234567891,"v":1.10}` {
+		t.Errorf("numbers inside a JSON object must stay exactly as written: %v", mustJSONText(v))
+	}
+	if k, v, err := splitAssignment("-e", "count:=3"); err != nil || k != "count" || mustJSONText(v) != "3" {
+		t.Errorf(":= forces JSON: %v %v %v", k, v, err)
+	}
+	if k, v, err := splitAssignment("-e", `version:="1.10"`); err != nil || k != "version" || v != "1.10" {
+		t.Errorf(":= with a JSON string: %v %v %v", k, v, err)
+	}
+	if _, _, err := splitAssignment("-e", "x:=not json"); err == nil {
+		t.Error(":= with bad JSON must be refused")
+	}
+	// end to end: what is sent
+	srv, env := lab(t, "awx", "operator")
+	out, errOut, code := runCLI(t, env, "launch", "Patch", "-e", "app_version=1.10", "-e", "ticket=12345678901234567891", "-e", "build=1e3", "-e", "n=5")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	for _, want := range []string{`"app_version": "1.10"`, `"ticket": "12345678901234567891"`, `"build": "1e3"`, `"n": 5`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan lacks %s:\n%s", want, out)
+		}
+	}
+	_ = srv
+}
+
+func mustJSONText(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// The launch allowlist must hold over MCP: nothing an MCP agent is offered may
+// change what a template runs, schedule one, or answer for a person.
+func TestMCPCannotGetAroundTheAllowlist(t *testing.T) {
+	srv, env := lab(t, "awx", "write")
+	mcp := with(env, "AWXCTL_FROM_MCP", "1", "AWXCTL_MODE", "dry-run", "AWXCTL_MCP_WRITES", "1")
+	srv.Add("/workflow_approvals/", map[string]any{"id": 70, "name": "ok?", "status": "pending"})
+	srv.Add("/projects/", map[string]any{"id": 50, "name": "ops"})
+	for _, args := range [][]string{
+		{"enable", "schedules", "nightly", "--apply"},
+		{"disable", "schedules", "nightly", "--apply"},
+		{"create", "schedules", "x", "--set", "unified_job_template=Patch", "--apply"},
+		{"update", "job-templates", "Patch", "--set", "playbook=other.yml", "--apply"},
+		{"update", "job-templates", "Patch", "--set", "name=Renamed", "--apply"},
+		{"update", "projects", "ops", "--set", "scm_branch=evil", "--apply"},
+		{"delete", "job-templates", "Patch", "--apply"},
+		{"copy", "job-templates", "Patch", "--name", "Patch2", "--apply"},
+		{"grant", "Inventory Use", "--user", "ann", "--on", "inventories=lab", "--apply"},
+		{"set", "survey", "Patch", "--remove", "--apply"},
+		{"approve", "70", "--apply"},
+		{"deny", "70", "--apply"},
+		{"attach", "credentials", "deploy", "--to", "job-templates=Patch", "--apply"},
+		{"attach", "hosts", "web1", "--to", "job-templates=Patch", "--apply"},
+		{"launch", "Patch", "--scm-branch", "evil", "--apply"},
+		{"launch", "Patch", "--inventory", "lab", "--apply"},
+		{"context", "list"},
+		{"token", "create", "--description", "x", "--apply"},
+	} {
+		if _, errOut, code := runCLI(t, mcp, args...); code != 5 || !strings.Contains(errOut, "not allowed over MCP") {
+			t.Errorf("%v must be refused over MCP: exit %d %s", args, code, errOut)
+		}
+	}
+	if w := changing(srv); len(w) != 0 {
+		t.Fatalf("refused commands sent requests: %+v", w)
+	}
+	// What stays possible: hosts, groups, inventories.
+	if _, errOut, code := runCLI(t, mcp, "disable", "hosts", "web1", "--apply"); code != 0 {
+		t.Errorf("a host change must work over MCP with writes on: exit %d %s", code, errOut)
+	}
+	// Approvals only with the explicit switch.
+	srv.Handle("/workflow_approvals/70/approve/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
+	if _, errOut, code := runCLI(t, with(mcp, "AWXCTL_MCP_APPROVALS", "1"), "approve", "70", "--apply"); code != 0 {
+		t.Errorf("approve with --allow-approvals: exit %d %s", code, errOut)
+	}
+	// The tool list matches: none of the refused commands is offered.
+	offered := map[string]bool{}
+	for _, tl := range mcpTools(true, false) {
+		offered[tl.Name] = true
+		if tl.Name == "launch" {
+			props := tl.InputSchema["properties"].(map[string]any)
+			if props["scm_branch"] != nil || props["inventory"] != nil {
+				t.Error("launch over MCP must not offer scm_branch or inventory")
+			}
+		}
+	}
+	for _, never := range []string{"approve", "deny", "grant", "revoke", "copy", "set_survey", "set_workflow_graph", "context_list", "token_create", "upgrade"} {
+		if offered[never] {
+			t.Errorf("%s must not be an MCP tool without its switch", never)
+		}
+	}
+	withApprovals := map[string]bool{}
+	for _, tl := range mcpTools(true, true) {
+		withApprovals[tl.Name] = true
+	}
+	if !withApprovals["approve"] || !withApprovals["deny"] || !offered["launch"] || !offered["update"] {
+		t.Error("approve and deny appear with --allow-approvals; launch and update stay")
 	}
 }

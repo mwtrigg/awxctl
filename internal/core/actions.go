@@ -148,8 +148,33 @@ func (c *Client) PlanLaunch(ctx context.Context, r *Resource, ref string, o Laun
 		if info[ask] == true {
 			continue
 		}
-		// Survey answers travel in extra_vars and are accepted without the prompt.
+		// Survey answers travel in extra_vars and are accepted without the prompt,
+		// but only the survey's own variables: any other name would be dropped.
 		if field == "extra_vars" && info["survey_enabled"] == true {
+			spec, err := c.Get(ctx, r.Path+idOf(tmpl)+"/survey_spec/")
+			if err != nil {
+				return nil, err
+			}
+			known := map[string]bool{}
+			if list, ok := spec["spec"].([]any); ok {
+				for _, q := range list {
+					if m, ok := q.(map[string]any); ok {
+						if name, _ := m["variable"].(string); name != "" {
+							known[name] = true
+						}
+					}
+				}
+			}
+			var extra []string
+			for name := range o.ExtraVars {
+				if !known[name] {
+					extra = append(extra, name)
+				}
+			}
+			if len(extra) > 0 {
+				sort.Strings(extra)
+				refused = append(refused, fmt.Sprintf("extra_vars %s (not questions of the template's survey, and the template does not have ask_variables_on_launch)", strings.Join(extra, ", ")))
+			}
 			continue
 		}
 		refused = append(refused, fmt.Sprintf("%s (the template does not have %s)", field, ask))
@@ -193,6 +218,15 @@ func (c *Client) PlanLaunch(ctx context.Context, r *Resource, ref string, o Laun
 		verify: func(_ context.Context, _ *Client, res Object) error {
 			if ID(res) == 0 {
 				return errors.New("the answer names no job")
+			}
+			// The job is running, but not as asked: that must not look like success.
+			if ign, ok := res["ignored_fields"].(map[string]any); ok && len(ign) > 0 {
+				names := make([]string, 0, len(ign))
+				for k := range ign {
+					names = append(names, k)
+				}
+				sort.Strings(names)
+				return fmt.Errorf("job %d was launched, but the controller ignored: %s; cancel it if it must not run that way", ID(res), strings.Join(names, ", "))
 			}
 			return nil
 		},
@@ -241,7 +275,11 @@ func (c *Client) PlanRelaunch(ctx context.Context, id int, hosts string) (*Plan,
 			return nil
 		},
 	}
-	return &Plan{Command: "relaunch", Tier: "operator", Steps: []*Step{step}}, nil
+	tier := "operator"
+	if j.Type == "ad_hoc_command" { // an arbitrary command: the same tier as running one
+		tier = "write"
+	}
+	return &Plan{Command: "relaunch", Tier: tier, Steps: []*Step{step}}, nil
 }
 
 // PlanCancel builds the cancel of running jobs. A job that cannot be canceled

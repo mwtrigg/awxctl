@@ -104,6 +104,9 @@ func launchFake(srv *fakeawx.Server, info map[string]any) {
 		}
 		fakeawx.JSON(w, 201, map[string]any{"id": 41, "job": 41, "status": "pending", "type": "job"})
 	})
+	srv.Handle("/job_templates/7/survey_spec/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"spec": []map[string]any{{"variable": "release", "type": "text"}, {"variable": "db_password", "type": "password"}}})
+	})
 }
 
 func TestLaunchRefusesWhatTheControllerWouldIgnore(t *testing.T) {
@@ -136,6 +139,10 @@ func TestLaunchPlanAndApply(t *testing.T) {
 	}
 	if len(writes(srv)) != 0 {
 		t.Fatal("a plan must send nothing")
+	}
+	// A name that is not a survey question would be dropped by the controller.
+	if _, err := c.PlanLaunch(ctx, jt, "Patch", LaunchOptions{ExtraVars: map[string]any{"release": "1.2", "dry_run": true}, Verbosity: -1}); !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "dry_run") {
+		t.Errorf("an extra variable that is not a survey question must be refused: %v", err)
 	}
 	shown, _ := json.Marshal(p)
 	if strings.Contains(string(shown), "hunter2") {
@@ -335,5 +342,45 @@ func TestDiagnose(t *testing.T) {
 	}
 	if _, err := c.Diagnose(context.Background(), 999); !errors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want not found", err)
+	}
+}
+
+func TestLaunchThatIgnoredFieldsIsNotSuccess(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/job_templates/", map[string]any{"id": 7, "name": "Patch"})
+	srv.Handle("/job_templates/7/launch/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fakeawx.JSON(w, 200, map[string]any{"ask_limit_on_launch": true})
+			return
+		}
+		fakeawx.JSON(w, 201, map[string]any{"id": 71, "status": "pending", "ignored_fields": map[string]any{"limit": "web1"}})
+	})
+	p, err := c.PlanLaunch(context.Background(), FindResource("job-templates"), "Patch", LaunchOptions{Limit: "web1", Verbosity: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Apply(context.Background(), c, nil)
+	var uo *OutcomeUnknownError
+	if !errors.As(err, &uo) || !strings.Contains(err.Error(), "ignored: limit") {
+		t.Fatalf("a launch whose fields were ignored must not end as applied: %v", err)
+	}
+	if s := p.Steps[0]; s.Status != "unknown" || s.Result["job_id"] != 71 {
+		t.Errorf("the job ID must still be reported: %+v", s)
+	}
+}
+
+func TestRelaunchTiers(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/unified_jobs/", map[string]any{"id": 60, "type": "ad_hoc_command"})
+	srv.Add("/ad_hoc_commands/", map[string]any{"id": 60, "name": "shell", "status": "successful"})
+	srv.Handle("/ad_hoc_commands/60/relaunch/", func(w http.ResponseWriter, _ *http.Request) { fakeawx.JSON(w, 200, map[string]any{}) })
+	srv.Add("/unified_jobs/", map[string]any{"id": 61, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 61, "name": "Patch", "status": "failed"})
+	srv.Handle("/jobs/61/relaunch/", func(w http.ResponseWriter, _ *http.Request) { fakeawx.JSON(w, 200, map[string]any{}) })
+	if p, err := c.PlanRelaunch(context.Background(), 60, ""); err != nil || p.Tier != "write" {
+		t.Errorf("relaunching an ad hoc command needs the write tier, like running one: %+v %v", p, err)
+	}
+	if p, err := c.PlanRelaunch(context.Background(), 61, "failed"); err != nil || p.Tier != "operator" {
+		t.Errorf("relaunching a job is operator tier: %+v %v", p, err)
 	}
 }

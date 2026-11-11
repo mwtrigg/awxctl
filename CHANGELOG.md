@@ -5,6 +5,19 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+### Security
+- Over MCP the launch allowlist could be sidestepped: an agent could enable a schedule of a template that is
+  not on the list, edit or rename templates, or change a project. Over MCP, templates, projects, schedules,
+  credentials, inventory sources, surveys, workflow graphs and role grants are now read-only, a launch cannot
+  pick another branch or inventory, and workflow approvals need `mcp --allow-approvals`.
+- Relaunching an ad hoc command needs the write tier, like running one.
+
+### Fixed
+- `-e` and `--set` values that look like numbers are no longer re-typed: `1.10` stays `1.10`, a long ID keeps
+  all its digits. `NAME:=JSON` forces JSON.
+- On a template with a survey, extra variables that are not survey questions are refused when the template does
+  not prompt for variables; a launch whose fields the controller ignored ends with exit 7, not as applied.
+
 ### Changed
 - `diagnose job` lists each distinct failure once, with the hosts it hit (hosts that failed the same task
   with the same message share an entry), and its play, role, task, file and line.

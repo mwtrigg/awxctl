@@ -166,7 +166,7 @@ change.
 | Command | Tier | Does |
 |---|---|---|
 | `launch <template>` | operator | launch a job template (`--workflow`: a workflow template); `--limit`, `--tags`, `--skip-tags`, `-e NAME=VALUE`, `--extra-vars-file`, `--inventory`, `--check`, `--wait`, `--follow` |
-| `relaunch <job-id>` | operator | run again; `--hosts failed` only on the hosts that failed |
+| `relaunch <job-id>` | operator | run again; `--hosts failed` only on the hosts that failed (an ad hoc command: write) |
 | `cancel <job-id>...` | operator | cancel running jobs |
 | `sync projects\|inventory-sources <name>...` | operator | start a sync |
 | `approve`, `deny <approval-id>...` | operator | answer workflow approvals |
@@ -215,7 +215,14 @@ Launch safety:
 - An option the template does not prompt for is **refused**. The controller would
   ignore it silently, and an ignored `--limit` means a run against every host.
 - `--check` is Ansible check mode: a real job. `--dry-run` sends nothing.
-- `allowed_templates` in the context limits what can be launched.
+- `allowed_templates` in the context limits what `launch` and `relaunch` accept (entries are names or
+  `id:<n>`; an ID cannot be taken over by renaming another template).
+- On a template with a survey, `-e` names that are not survey questions are refused unless the template
+  also prompts for variables. If the controller still reports ignored fields after a launch, the command
+  ends with exit 7 and the job's ID, not as a success.
+- `-e` and `--set` values are text unless they are `true`, `false`, `null`, a plain number, or a JSON
+  list or object: `-e version=1.10` sends the text `1.10`. `NAME:=JSON` forces JSON (`-e count:=3`,
+  `-e version:='"1.10"'`).
 - Passwords a template asks for at launch are not supported.
 
 Audit records: an applied change first writes a record (what is sent, the state
@@ -240,11 +247,21 @@ stdin), not on the command line.
   ```
 
   Read-only by default. With `--allow-writes` the changing tools appear, and each is
-  still a dry run unless called with `apply: true`. Over MCP a template can only be
-  launched if it is in `allowed_templates`; ad hoc commands, `api`, context switching
-  token creation and flags that read or write local files (so also `set survey`
-  and `set workflow-graph`) are never offered. Each call runs awxctl
-  as a child process that enforces the same rules.
+  still a dry run unless called with `apply: true`.
+
+  Over MCP a template can only be launched or relaunched if it is in
+  `allowed_templates`, and only as it is defined (no other branch or inventory). So
+  that the list holds, everything that decides what runs is read-only over MCP: job
+  and workflow templates, projects, schedules, credentials, inventory sources,
+  surveys, workflow graphs and role grants. Hosts, groups, inventories and labels can
+  be changed. Workflow approvals can be answered only if the server was started with
+  `--allow-approvals`. Never offered: ad hoc commands, `api`, tokens, contexts,
+  `upgrade`, and flags that read or write local files. Each call runs awxctl as a
+  child process that enforces the same rules.
+
+  The allowlist is a guardrail for MCP and for the `launch` and `relaunch` commands.
+  An agent that can run awxctl in a shell with a write-tier context can edit a
+  template like any operator: what such an agent may do is set by its token.
 
 ## Exit codes
 

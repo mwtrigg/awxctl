@@ -88,13 +88,13 @@ func (p *Plan) Apply(ctx context.Context, c *Client, rec Recorder) error {
 				err = &OutcomeUnknownError{Method: s.Method, Path: s.Path, Cause: fmt.Errorf("the request was accepted but the change could not be confirmed: %w", verr)}
 			}
 		}
+		if res != nil && s.result != nil {
+			s.Result = s.result(res) // also when the change cannot be confirmed: the job ID matters most then
+		}
 		var unknown *OutcomeUnknownError
 		switch {
 		case err == nil:
 			s.Status, s.raw = "applied", res
-			if s.result != nil {
-				s.Result = s.result(res)
-			}
 		case errors.As(err, &unknown):
 			s.Status, s.Error, stop = "unknown", err.Error(), err
 		default:

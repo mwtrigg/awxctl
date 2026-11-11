@@ -35,7 +35,8 @@ the roles of the token's user and the token's scope. Recommended:
   auditor role;
 - `permissions: readonly` (the default when nothing is set) on contexts an agent uses;
 - an `allowed_templates` list on any context an agent may launch from (over MCP nothing can be launched
-  without one);
+  without one, and templates, projects, schedules and credentials are read-only there so the list cannot
+  be sidestepped; an agent with a shell and a write-tier context is limited only by its token);
 - the config file mode 0600 and the state directory owned by you.
 
 Text that comes from the controller (names, job output, messages) is written by third parties. awxctl

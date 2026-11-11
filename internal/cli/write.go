@@ -148,17 +148,64 @@ func runPlanMode(cmd *cobra.Command, ctx *config.Context, ctxName string, client
 	return true, nil
 }
 
-// parseValue reads a --set value: JSON when it is JSON (true, 3, null, [..], {..}),
-// text otherwise.
+// parseValue reads a NAME=VALUE value. true, false and null, and JSON lists and
+// objects, are sent as such. A number is sent as a number only when that changes
+// nothing: 5 and 2.5 are numbers, but 1.10, 007, 1e3 and an integer too long for
+// 64 bits stay text exactly as typed (a version "1.10" must not arrive as 1.1).
+// Everything else is text. NAME:=JSON forces JSON (see splitAssignment).
 func parseValue(s string) any {
-	var v any
-	dec := json.NewDecoder(strings.NewReader(s))
-	if err := dec.Decode(&v); err == nil && !dec.More() {
-		if _, isString := v.(string); !isString {
+	switch s {
+	case "true":
+		return true
+	case "false":
+		return false
+	case "null":
+		return nil
+	}
+	if t := strings.TrimSpace(s); strings.HasPrefix(t, "[") || strings.HasPrefix(t, "{") {
+		if v, err := parseJSON(s); err == nil {
 			return v
 		}
+		return s
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil && strconv.FormatInt(i, 10) == s {
+		return i
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && strconv.FormatFloat(f, 'f', -1, 64) == s && strings.Contains(s, ".") {
+		return f
 	}
 	return s
+}
+
+// parseJSON decodes one JSON value, keeping numbers exactly as written.
+func parseJSON(s string) (any, error) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	if dec.More() {
+		return nil, errors.New("more than one JSON value")
+	}
+	return v, nil
+}
+
+// splitAssignment reads NAME=VALUE (value typed by parseValue) or NAME:=JSON
+// (value is JSON, for a number or text that parseValue would read differently).
+func splitAssignment(flag, kv string) (string, any, error) {
+	if k, raw, ok := strings.Cut(kv, ":="); ok && k != "" && !strings.Contains(k, "=") {
+		v, err := parseJSON(raw)
+		if err != nil {
+			return "", nil, &usageError{fmt.Sprintf("%s %s: the value after := is not JSON: %v", flag, k, err)}
+		}
+		return k, v, nil
+	}
+	k, v, ok := strings.Cut(kv, "=")
+	if !ok || k == "" {
+		return "", nil, &usageError{fmt.Sprintf("%s wants NAME=VALUE (or NAME:=JSON), got %q", flag, kv)}
+	}
+	return k, parseValue(v), nil
 }
 
 // textFields are sent to the API as text even when given as a structure.
@@ -179,14 +226,14 @@ func readValues(cmd *cobra.Command) (map[string]any, error) {
 	}
 	sets, _ := cmd.Flags().GetStringArray("set")
 	for _, kv := range sets {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, &usageError{fmt.Sprintf("--set wants FIELD=VALUE, got %q", kv)}
+		k, v, err := splitAssignment("--set", kv)
+		if err != nil {
+			return nil, err
 		}
 		if secretLooking(k) {
 			return nil, &usageError{fmt.Sprintf("--set %s would put a secret on the command line: use --set-file %s=PATH (or - for stdin) or --file", k, k)}
 		}
-		values[k] = parseValue(v)
+		values[k] = v
 	}
 	setFiles, _ := cmd.Flags().GetStringArray("set-file")
 	for _, kv := range setFiles {
@@ -322,16 +369,21 @@ func extraVars() (map[string]any, error) {
 	}
 	for _, kv := range lVars {
 		if strings.HasPrefix(strings.TrimSpace(kv), "{") {
-			if err := json.Unmarshal([]byte(kv), &vars); err != nil {
-				return nil, &usageError{"--extra-vars: not a JSON object: " + err.Error()}
+			obj, err := parseJSON(kv)
+			m, isMap := obj.(map[string]any)
+			if err != nil || !isMap {
+				return nil, &usageError{"--extra-vars: not a JSON object"}
+			}
+			for k, v := range m {
+				vars[k] = v
 			}
 			continue
 		}
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, &usageError{fmt.Sprintf("--extra-vars wants NAME=VALUE or a JSON object, got %q", kv)}
+		k, v, err := splitAssignment("--extra-vars", kv)
+		if err != nil {
+			return nil, err
 		}
-		vars[k] = parseValue(v)
+		vars[k] = v
 	}
 	return vars, nil
 }
@@ -770,7 +822,7 @@ func init() {
 	launchCmd.Flags().StringVar(&lLimit, "limit", "", "host pattern to limit the run to")
 	launchCmd.Flags().StringVar(&lTags, "tags", "", "job tags, comma-separated")
 	launchCmd.Flags().StringVar(&lSkip, "skip-tags", "", "tags to skip, comma-separated")
-	launchCmd.Flags().StringArrayVarP(&lVars, "extra-vars", "e", nil, "extra variable NAME=VALUE (repeatable) or a JSON object")
+	launchCmd.Flags().StringArrayVarP(&lVars, "extra-vars", "e", nil, "extra variable NAME=VALUE (repeatable), NAME:=JSON, or a JSON object; 1.10 stays the text 1.10")
 	launchCmd.Flags().StringVar(&lVarsFile, "extra-vars-file", "", "YAML or JSON file with extra variables (- for stdin)")
 	launchCmd.Flags().StringVar(&lInventory, "inventory", "", "inventory to run against, when the template prompts for it")
 	launchCmd.Flags().BoolVar(&lCheck, "check", false, "launch in Ansible check mode (a real job that changes nothing on the hosts)")
@@ -784,7 +836,7 @@ func init() {
 	addBulkFlags(syncCmd)
 	addJobWaitFlags(syncCmd)
 	for _, c := range []*cobra.Command{createCmd, updateCmd} {
-		c.Flags().StringArray("set", nil, "FIELD=VALUE (repeatable); a value that is JSON (true, 3, [..], {..}) is sent as such")
+		c.Flags().StringArray("set", nil, "FIELD=VALUE (repeatable): true/false/null, plain numbers, [..] and {..} are sent as such, the rest as text; FIELD:=JSON forces JSON")
 		c.Flags().StringArray("set-file", nil, "FIELD=PATH: read the value from a file, - for stdin (repeatable)")
 		c.Flags().String("file", "", "YAML or JSON mapping of fields (- for stdin)")
 	}
