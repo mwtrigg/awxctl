@@ -451,3 +451,95 @@ func TestResolveAll(t *testing.T) {
 		t.Errorf("got %v, want not found", err)
 	}
 }
+
+func TestDiagnoseGroupsIdenticalFailures(t *testing.T) {
+	c, srv := liveClient(t, "aap")
+	srv.Add("/unified_jobs/", map[string]any{"id": 40, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 40, "name": "Patch", "status": "failed", "failed": true})
+	fail := func(n int, host, task, msg string) map[string]any {
+		return map[string]any{"counter": n, "event": "runner_on_failed", "host_name": host, "task": task, "play": "p", "role": "kernel", "failed": true,
+			"event_data": map[string]any{"task_path": "/runner/project/roles/kernel/tasks/main.yml:12", "res": map[string]any{"msg": msg}}}
+	}
+	srv.Handle("/jobs/40/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("event__in") == "" {
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+			return
+		}
+		fakeawx.JSON(w, 200, map[string]any{"count": 4, "results": []map[string]any{
+			fail(10, "web1.example.com", "Check kmod", "web1.example.com: the driver for the new kernel is not published"),
+			fail(11, "web3.example.com", "Check kmod", "web3.example.com: the driver for the new kernel is not published"),
+			fail(12, "web2.example.com", "Check kmod", "web2.example.com: the driver for the new kernel is not published"),
+			fail(20, "db1.example.com", "Restart", "service did not start"),
+		}})
+	})
+	srv.Handle("/jobs/40/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 4, "results": []map[string]any{{"host_name": "a"}, {"host_name": "b"}, {"host_name": "c"}, {"host_name": "d"}}})
+	})
+	d, err := c.Diagnose(context.Background(), 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Failures) != 2 {
+		t.Fatalf("three hosts with the same failure are one entry, the fourth another: %+v", d.Failures)
+	}
+	g := d.Failures[0]
+	hosts := g["hosts"].([]string)
+	if g["host_count"] != 3 || strings.Join(hosts, ",") != "web1.example.com,web2.example.com,web3.example.com" || g["message"] != "<host>: the driver for the new kernel is not published" ||
+		g["role"] != "kernel" || g["task_path"] != "/runner/project/roles/kernel/tasks/main.yml:12" {
+		t.Errorf("group: %+v", g)
+	}
+	if d.Failures[1]["message"] != "service did not start" || d.Failures[1]["host_count"] != 1 {
+		t.Errorf("second group: %+v", d.Failures[1])
+	}
+	if !strings.Contains(d.Verdict, "4 failed task result(s) on 4 host(s), 2 distinct failure(s)") || !strings.Contains(d.Verdict, `task "Check kmod" on 3 host(s)`) {
+		t.Errorf("verdict: %s", d.Verdict)
+	}
+	if d.Stalled != nil {
+		t.Errorf("a job with failures that was not cut off has no stalled report: %+v", d.Stalled)
+	}
+}
+
+func TestDiagnoseNamesTheHostThatNeverReturned(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/unified_jobs/", map[string]any{"id": 50, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 50, "name": "Daily", "status": "failed", "failed": true, "job_explanation": "Job terminated due to timeout"})
+	ev := func(n int, event, host string) map[string]any {
+		return map[string]any{"counter": n, "event": event, "host_name": host, "task": "Set registry value", "play": "p", "role": "tcp", "parent_uuid": "task-9", "created": "2030-01-01T00:07:15Z"}
+	}
+	srv.Handle("/jobs/50/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case q.Get("event__in") != "": // no failed task was recorded
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+		case q.Get("order_by") == "-counter":
+			fakeawx.JSON(w, 200, map[string]any{"count": 5, "results": []map[string]any{ev(9, "runner_on_ok", "web2.example.com")}})
+		case q.Get("parent_uuid") == "task-9":
+			fakeawx.JSON(w, 200, map[string]any{"count": 5, "results": []map[string]any{
+				ev(5, "runner_on_start", "web1.example.com"), ev(6, "runner_on_start", "web2.example.com"), ev(7, "runner_on_start", "web3.example.com"),
+				ev(8, "runner_on_ok", "web1.example.com"), ev(9, "runner_on_ok", "web2.example.com")}})
+		default:
+			t.Errorf("unexpected events query: %s", r.URL.RawQuery)
+		}
+	})
+	srv.Handle("/jobs/50/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+	})
+	srv.Handle("/jobs/50/stdout/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"range": map[string]any{"start": 0, "end": 1, "absolute_end": 1}, "content": "TASK [Set registry value]\n"})
+	})
+	d, err := c.Diagnose(context.Background(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Stalled == nil || d.Stalled["last_task"] != "Set registry value" || d.Stalled["hosts_started"] != 3 || d.Stalled["hosts_returned"] != 2 {
+		t.Fatalf("stalled: %+v", d.Stalled)
+	}
+	if missing := d.Stalled["hosts_not_returned"].([]string); len(missing) != 1 || missing[0] != "web3.example.com" {
+		t.Errorf("the host that never returned: %v", missing)
+	}
+	for _, want := range []string{"Job terminated due to timeout", `task "Set registry value"`, "1 host(s) started it and never returned: web3.example.com"} {
+		if !strings.Contains(d.Verdict, want) {
+			t.Errorf("verdict lacks %q: %s", want, d.Verdict)
+		}
+	}
+}

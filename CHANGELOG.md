@@ -5,6 +5,12 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+### Changed
+- `diagnose job` lists each distinct failure once, with the hosts it hit (hosts that failed the same task
+  with the same message share an entry), and its play, role, task, file and line.
+- `diagnose job` on a job that timed out or was canceled names the last task that ran and the hosts that
+  started it and never returned.
+
 ## [0.1.0] - 2026-11-11
 
 First release.

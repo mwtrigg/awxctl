@@ -413,11 +413,21 @@ var diagnoseCmd = group(&cobra.Command{
 var diagnoseJobCmd = &cobra.Command{
 	Use:   "job <job-id>",
 	Short: "Why did this job fail: verdict, failed tasks per host, failing hosts, workflow nodes",
-	Long: `Collects what explains a run in one call: the job's own facts, every failed or
-unreachable task result (task, host, message), the hosts that failed with their
-counts, the nodes of a workflow that did not succeed, and the last output lines
-when no task failure was recorded. Works for jobs, workflow jobs, project and
-inventory syncs.`,
+	Long: `Collects what explains a run in one call:
+
+  - the job's own facts (template, inventory, limit, who or what launched it);
+  - the failed and unreachable task results, one entry per distinct failure with
+    the play, role, task, file and line, message and the hosts it hit: hosts that
+    failed the same task the same way share one entry;
+  - the hosts that failed, with their counts;
+  - for a job that timed out or was canceled: the last task that ran, when its
+    last result arrived, and the hosts that started it and never returned;
+  - for a workflow: the nodes that did not succeed, with their job IDs;
+  - the last output lines when nothing better is recorded.
+
+This is best effort: it reports what the controller recorded. A task that hides
+its result (no_log) or only says "failed, see above" tells diagnose no more than
+it tells you; then read the output (awxctl get job-output, get host-output).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, err := jobID(args[0])
@@ -433,6 +443,9 @@ inventory syncs.`,
 			return err
 		}
 		row := map[string]any{"verdict": d.Verdict, "job": d.Job, "failures": d.Failures, "hosts": d.Hosts, "nodes": d.Nodes}
+		if d.Stalled != nil {
+			row["stalled"] = d.Stalled
+		}
 		if len(d.Tail) > 0 {
 			row["tail"] = d.Tail
 		}
@@ -442,7 +455,10 @@ inventory syncs.`,
 		}
 		fmt.Printf("Job %d (%v) %v: %s\n", id, d.Job["type"], d.Job["name"], d.Verdict)
 		for _, f := range d.Failures {
-			fmt.Printf("  FAILED  host=%v  task=%q  %v\n", f["host"], f["task"], output.Printable(fmt.Sprint(f["message"])))
+			fmt.Printf("  FAILED  %v host(s): %v\n          role=%v task=%q (%v)\n          %v\n", f["host_count"], strings.Join(f["hosts"].([]string), ", "), f["role"], f["task"], f["task_path"], output.Printable(fmt.Sprint(f["message"])))
+		}
+		if d.Stalled != nil {
+			fmt.Printf("  STALLED last task %q, last result at %v, never returned: %v\n", d.Stalled["last_task"], d.Stalled["last_result_at"], d.Stalled["hosts_not_returned"])
 		}
 		for _, n := range d.Nodes {
 			fmt.Printf("  NODE    %v  job=%v  status=%v\n", n["template"], n["job_id"], n["status"])

@@ -113,7 +113,7 @@ About jobs:
 
 | Command | Answers |
 |---|---|
-| `diagnose job <id>` | why it failed: verdict, failed task results, failing hosts, workflow nodes |
+| `diagnose job <id>` | why it failed, best effort: verdict, each distinct failure with its role, task, file and hosts, the host that hung a timed-out job, workflow nodes |
 | `get job-output <id>` | the output, narrowed with `--tail`, `--head`, `--grep`/`--context`, saved with `--save`, streamed with `--follow --text` |
 | `get job-events <id>` | task results: `--failed`, `--changed`, `--host`, `--task` |
 | `get job-hosts <id>` | per-host counts (ok, changed, failures, unreachable) |

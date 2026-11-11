@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -251,12 +252,111 @@ var HostSummaryFields = []Field{
 
 // Diagnosis is the answer to "why did this run fail".
 type Diagnosis struct {
-	Job      map[string]any   `json:"job"`
-	Verdict  string           `json:"verdict"`
-	Failures []map[string]any `json:"failures"`       // failed and unreachable task results
-	Hosts    []map[string]any `json:"hosts"`          // per-host counts of the hosts that failed
-	Nodes    []map[string]any `json:"nodes"`          // workflow jobs: the nodes that did not succeed
-	Tail     []string         `json:"tail,omitempty"` // last output lines, when there is no better evidence
+	Job     map[string]any `json:"job"`
+	Verdict string         `json:"verdict"`
+	// Failures are the failed and unreachable task results, one entry per distinct
+	// failure: hosts that failed the same task with the same message share an
+	// entry, which lists them.
+	Failures []map[string]any `json:"failures"`
+	Hosts    []map[string]any `json:"hosts"` // per-host counts of the hosts that failed
+	Nodes    []map[string]any `json:"nodes"` // workflow jobs: the nodes that did not succeed
+	// Stalled is set for a job that was cut off (timeout, cancel) or ended without
+	// a failed task: the last task that ran and the hosts that never returned from it.
+	Stalled map[string]any `json:"stalled,omitempty"`
+	Tail    []string       `json:"tail,omitempty"` // last output lines, when there is no better evidence
+}
+
+// maxFailureEvents bounds how many failed task results a diagnosis reads.
+const maxFailureEvents = 1000
+
+// groupFailures folds failure events into one entry per distinct failure. Two
+// results are the same failure when the event, play, role, task and message
+// agree once the host's own name is taken out of the message.
+func groupFailures(evs []Object) []map[string]any {
+	var order []string
+	groups := map[string]map[string]any{}
+	for _, e := range evs {
+		row := EventRow(e)
+		host, _ := row["host"].(string)
+		msg := fmt.Sprint(row["message"])
+		if row["message"] == nil {
+			msg = ""
+		}
+		norm := msg
+		if host != "" {
+			norm = strings.ReplaceAll(msg, host, "<host>")
+		}
+		key := fmt.Sprint(row["event"], "\x00", row["play"], "\x00", row["role"], "\x00", row["task"], "\x00", norm)
+		g := groups[key]
+		if g == nil {
+			g = map[string]any{"event": row["event"], "play": row["play"], "role": row["role"], "task": row["task"], "task_path": row["task_path"],
+				"module": row["module"], "message": norm, "hosts": []string{}, "first_counter": row["counter"], "first_line": row["start_line"]}
+			if norm == msg {
+				g["message"] = row["message"]
+			}
+			for _, k := range []string{"stderr", "rc"} {
+				if row[k] != nil && row[k] != "" {
+					g[k] = row[k]
+				}
+			}
+			groups[key] = g
+			order = append(order, key)
+		}
+		if host != "" {
+			g["hosts"] = append(g["hosts"].([]string), host)
+		}
+	}
+	out := make([]map[string]any, len(order))
+	for i, k := range order {
+		g := groups[k]
+		hosts := g["hosts"].([]string)
+		sort.Strings(hosts)
+		g["hosts"], g["host_count"] = hosts, len(hosts)
+		out[i] = g
+	}
+	return out
+}
+
+// stalled finds where a job stopped: the newest task result, the task it belongs
+// to, and the hosts that started that task without returning from it.
+func (c *Client) stalled(ctx context.Context, j *Job) (map[string]any, error) {
+	ep := j.EventsPath()
+	newest, _, err := c.List(ctx, ep, url.Values{"order_by": {"-counter"}, "event__startswith": {"runner_"}}, 1)
+	if err != nil || len(newest) == 0 {
+		return nil, err
+	}
+	last := newest[0]
+	out := map[string]any{"last_task": last["task"], "play": last["play"], "role": last["role"], "last_result_at": last["created"]}
+	parent, _ := last["parent_uuid"].(string)
+	if parent == "" {
+		return out, nil
+	}
+	evs, _, err := c.List(ctx, ep, url.Values{"parent_uuid": {parent}, "event__startswith": {"runner_"}}, 0)
+	if err != nil {
+		return nil, err
+	}
+	started, returned := map[string]bool{}, map[string]bool{}
+	for _, e := range evs {
+		host, _ := e["host_name"].(string)
+		if host == "" {
+			continue
+		}
+		switch e["event"] {
+		case "runner_on_start":
+			started[host] = true
+		case "runner_on_ok", "runner_on_failed", "runner_on_unreachable", "runner_on_skipped":
+			returned[host] = true
+		}
+	}
+	missing := []string{}
+	for h := range started {
+		if !returned[h] {
+			missing = append(missing, h)
+		}
+	}
+	sort.Strings(missing)
+	out["hosts_started"], out["hosts_returned"], out["hosts_not_returned"] = len(started), len(returned), missing
+	return out, nil
 }
 
 // Diagnose explains a run in one call.
@@ -297,12 +397,14 @@ func (c *Client) Diagnose(ctx context.Context, id int) (*Diagnosis, error) {
 		}
 	}
 	if ep := j.EventsPath(); ep != "" && j.HasTaskEvents() {
-		evs, _, err := c.List(ctx, ep, url.Values{"event__in": {"runner_on_failed,runner_on_unreachable,runner_item_on_failed"}, "order_by": {"counter"}}, 50)
+		evs, total, err := c.List(ctx, ep, url.Values{"event__in": {"runner_on_failed,runner_on_unreachable,runner_item_on_failed"}, "order_by": {"counter"}}, maxFailureEvents)
 		if err != nil {
 			return nil, err
 		}
-		for _, e := range evs {
-			d.Failures = append(d.Failures, EventRow(e))
+		d.Failures = groupFailures(evs)
+		d.Job["failed_results"] = total
+		if total > len(evs) {
+			d.Job["failed_results_read"] = len(evs)
 		}
 	}
 	if j.Type == "job" {
@@ -313,6 +415,19 @@ func (c *Client) Diagnose(ctx context.Context, id int) (*Diagnosis, error) {
 		res := &Resource{Fields: HostSummaryFields[:9]}
 		for _, s := range sums {
 			d.Hosts = append(d.Hosts, res.Row(s))
+		}
+	}
+	expl, _ := j.Obj["job_explanation"].(string)
+	cutOff := j.Status() == "canceled" || strings.Contains(strings.ToLower(expl), "timeout") || strings.Contains(strings.ToLower(expl), "timed out")
+	if j.HasTaskEvents() && Finished(j.Status()) && j.Status() != "successful" && (cutOff || len(d.Failures) == 0) {
+		st, err := c.stalled(ctx, j)
+		if err != nil {
+			return nil, err
+		}
+		if st != nil {
+			if missing, _ := st["hosts_not_returned"].([]string); len(missing) > 0 || cutOff {
+				d.Stalled = st
+			}
 		}
 	}
 	if len(d.Failures) == 0 && len(d.Nodes) == 0 && j.Type != "workflow_job" && Finished(j.Status()) && j.Status() != "successful" {
@@ -329,23 +444,50 @@ func (c *Client) Diagnose(ctx context.Context, id int) (*Diagnosis, error) {
 func verdict(j *Job, d *Diagnosis) string {
 	st := j.Status()
 	expl, _ := j.Obj["job_explanation"].(string)
+	stuck := ""
+	if d.Stalled != nil {
+		stuck = fmt.Sprintf("; the last task result is from %v in task %q", d.Stalled["last_result_at"], d.Stalled["last_task"])
+		if missing, _ := d.Stalled["hosts_not_returned"].([]string); len(missing) > 0 {
+			shown := missing
+			if len(shown) > 10 {
+				shown = shown[:10]
+			}
+			stuck += fmt.Sprintf("; %d host(s) started it and never returned: %s", len(missing), strings.Join(shown, ", "))
+			if len(missing) > len(shown) {
+				stuck += ", ..."
+			}
+		}
+	}
+	why := ""
+	if expl != "" {
+		why = " (" + expl + ")"
+	}
+	results := 0
+	for _, f := range d.Failures {
+		results += max(asInt(f["host_count"]), 1)
+	}
 	switch {
 	case !Finished(st):
 		return fmt.Sprintf("not finished yet: status %s", st)
 	case st == "successful":
-		if n := len(d.Failures); n > 0 {
-			return fmt.Sprintf("successful, with %d task failure(s) that were ignored or rescued", n)
+		if results > 0 {
+			return fmt.Sprintf("successful, with %d task failure(s) that were ignored or rescued", results)
 		}
 		return "successful"
 	case st == "canceled":
-		return "canceled" + ifText(": ", expl)
+		return "canceled" + ifText(": ", expl) + stuck
 	case len(d.Nodes) > 0:
 		return fmt.Sprintf("%s: %d workflow node(s) did not succeed; diagnose their job IDs for the cause", st, len(d.Nodes))
 	case len(d.Failures) > 0:
 		first := d.Failures[0]
-		return fmt.Sprintf("%s: %d task failure(s) on %d host(s); first: task %q on host %v", st, len(d.Failures), max(len(d.Hosts), 1), first["task"], first["host"])
+		hosts, _ := first["hosts"].([]string)
+		where := fmt.Sprintf("on %d host(s)", len(hosts))
+		if len(hosts) == 1 {
+			where = "on host " + hosts[0]
+		}
+		return fmt.Sprintf("%s: %d failed task result(s) on %d host(s), %d distinct failure(s); first: task %q %s", st, results, max(len(d.Hosts), 1), len(d.Failures), first["task"], where) + why + stuck
 	case expl != "":
-		return st + ": " + expl
+		return st + ": " + expl + stuck
 	case j.Obj["result_traceback"] != nil && j.Obj["result_traceback"] != "":
 		return st + ": the run crashed before any task ran, see job.result_traceback"
 	}
