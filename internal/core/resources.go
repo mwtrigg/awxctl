@@ -25,6 +25,7 @@ type Resource struct {
 	NameField string   // "name", "username", "hostname"; "" = addressed by ID only
 	Order     string   // default order_by
 	TimeField string   // field --since/--until filter on; "" = none
+	JobLike   bool     // a run: has a name, a status and failed, so --failed and --name apply
 	Fields    []Field
 	// Filters are convenience flags: flag name -> query parameter.
 	Filters map[string]string
@@ -57,7 +58,7 @@ var jobFields = []Field{
 func withJob(extra ...Field) []Field { return append(append([]Field{}, jobFields...), extra...) }
 
 var resources = []*Resource{
-	{Kind: "jobs", Singular: "job", Path: "/jobs/", Order: "-id", TimeField: "created",
+	{Kind: "jobs", JobLike: true, Singular: "job", Path: "/jobs/", Order: "-id", TimeField: "created",
 		Fields: withJob(
 			ff("template", "TEMPLATE", "summary_fields.job_template.name"),
 			ff("inventory", "INVENTORY", "summary_fields.inventory.name"),
@@ -67,21 +68,21 @@ var resources = []*Resource{
 			wf("template_id", "job_template"), wf("inventory_id", "inventory"), w("execution_node"),
 		),
 		Filters: map[string]string{"template": "job_template__name", "inventory": "inventory__name", "project": "project__name", "status": "status", "launched-by": "created_by__username"}},
-	{Kind: "unified-jobs", Singular: "unified job", Aliases: []string{"all-jobs"}, Path: "/unified_jobs/", Order: "-id", TimeField: "created",
+	{Kind: "unified-jobs", JobLike: true, Singular: "unified job", Aliases: []string{"all-jobs"}, Path: "/unified_jobs/", Order: "-id", TimeField: "created",
 		Fields:  withJob(f("type", "TYPE"), wf("template", "summary_fields.unified_job_template.name")),
 		Filters: map[string]string{"status": "status", "type": "type", "template": "unified_job_template__name"}},
-	{Kind: "workflow-jobs", Singular: "workflow job", Path: "/workflow_jobs/", Order: "-id", TimeField: "created",
+	{Kind: "workflow-jobs", JobLike: true, Singular: "workflow job", Path: "/workflow_jobs/", Order: "-id", TimeField: "created",
 		Fields:  withJob(ff("template", "TEMPLATE", "summary_fields.workflow_job_template.name"), w("limit")),
 		Filters: map[string]string{"template": "workflow_job_template__name", "status": "status"}},
-	{Kind: "project-updates", Singular: "project update", Path: "/project_updates/", Order: "-id", TimeField: "created",
+	{Kind: "project-updates", JobLike: true, Singular: "project update", Path: "/project_updates/", Order: "-id", TimeField: "created",
 		Fields:  withJob(ff("project", "PROJECT", "summary_fields.project.name"), w("scm_revision"), w("scm_branch")),
 		Filters: map[string]string{"project": "project__name", "status": "status"}},
-	{Kind: "inventory-updates", Singular: "inventory update", Path: "/inventory_updates/", Order: "-id", TimeField: "created",
+	{Kind: "inventory-updates", JobLike: true, Singular: "inventory update", Path: "/inventory_updates/", Order: "-id", TimeField: "created",
 		Fields:  withJob(ff("inventory", "INVENTORY", "summary_fields.inventory.name"), ff("source", "SOURCE", "summary_fields.inventory_source.name")),
 		Filters: map[string]string{"inventory": "inventory__name", "status": "status"}},
-	{Kind: "ad-hoc-commands", Singular: "ad hoc command", Path: "/ad_hoc_commands/", Order: "-id", TimeField: "created",
+	{Kind: "ad-hoc-commands", JobLike: true, Singular: "ad hoc command", Path: "/ad_hoc_commands/", Order: "-id", TimeField: "created",
 		Fields: withJob(f("module_name", "MODULE"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), f("limit", "LIMIT"))},
-	{Kind: "system-jobs", Singular: "system job", Path: "/system_jobs/", Order: "-id", TimeField: "created", Fields: withJob(w("job_type"))},
+	{Kind: "system-jobs", JobLike: true, Singular: "system job", Path: "/system_jobs/", Order: "-id", TimeField: "created", Fields: withJob(w("job_type"))},
 	{Kind: "workflow-approvals", Singular: "workflow approval", Aliases: []string{"approvals"}, Path: "/workflow_approvals/", Order: "-id", TimeField: "created",
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("status", "STATUS"),
 			ff("workflow_job", "WORKFLOW JOB", "summary_fields.workflow_job.name"), ff("workflow_job_id", "WF JOB ID", "summary_fields.workflow_job.id"),
@@ -124,7 +125,7 @@ var resources = []*Resource{
 			f("has_active_failures", "FAILING"), ff("last_job_id", "LAST JOB", "summary_fields.last_job.id"),
 			ff("last_job_status", "LAST STATUS", "summary_fields.last_job.status"), ff("last_job_finished", "LAST FINISHED", "summary_fields.last_job.finished"),
 			w("description"), w("variables"), wf("inventory_id", "inventory"), wf("groups", "summary_fields.groups.results"), w("instance_id")},
-		Filters:  map[string]string{"inventory": "inventory__name", "group": "groups__name", "enabled": "enabled", "failing": "has_active_failures"},
+		Filters:  map[string]string{"inventory": "inventory__name", "group": "groups__name", "enabled": "enabled"},
 		Writable: []string{"name", "description", "inventory", "enabled", "variables", "instance_id"},
 		Refs:     map[string]string{"inventory": "inventories"}},
 	{Kind: "groups", Singular: "group", Path: "/groups/", NameField: "name", Order: "name", Scope: "inventory",

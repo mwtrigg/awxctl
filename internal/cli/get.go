@@ -37,6 +37,7 @@ var (
 	getLimit   int
 	getOrder   string
 	getWide    bool
+	getGroupBy string
 )
 
 // columns returns the output columns of a resource; wide fields only when asked.
@@ -174,14 +175,64 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		if total > len(rows) {
 			output.Fetched = limit // there are more than were read
 		}
+		if getGroupBy != "" {
+			return printGroups(outFmt, r, rows, getGroupBy)
+		}
 		return output.Print(outFmt, columns(r, getWide || outFmt != output.FormatTable), rows)
 	}
 }
 
+// printGroups counts the rows per value of one field: "failed jobs by template".
+func printGroups(outFmt output.Format, r *core.Resource, rows []map[string]any, field string) error {
+	known := false
+	for _, fd := range r.Fields {
+		known = known || fd.Key == field
+	}
+	if !known {
+		return &usageError{fmt.Sprintf("--group-by %s: %s have no such field", field, r.Kind)}
+	}
+	type group struct {
+		count, failed int
+		newest        any
+	}
+	groups := map[string]*group{}
+	var order []string
+	for _, row := range rows {
+		key := fmt.Sprint(row[field])
+		if row[field] == nil {
+			key = "(none)"
+		}
+		g := groups[key]
+		if g == nil {
+			g = &group{newest: row["id"]}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.count++
+		if row["failed"] == true {
+			g.failed++
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return groups[order[i]].count > groups[order[j]].count })
+	out := make([]map[string]any, len(order))
+	for i, key := range order {
+		g := groups[key]
+		out[i] = map[string]any{field: key, "count": g.count, "newest_id": g.newest}
+		if r.JobLike {
+			out[i]["failed"] = g.failed
+		}
+	}
+	if output.Fetched == 0 {
+		output.Fetched = len(rows) // the limit applies to the rows read, not to the groups
+	}
+	cols := []output.Column{{Key: field, Header: strings.ToUpper(field)}, {Key: "count", Header: "COUNT"}, {Key: "failed", Header: "FAILED"}, {Key: "newest_id", Header: "NEWEST ID"}}
+	return output.Print(outFmt, cols, out)
+}
+
 func addListFlags(c *cobra.Command) {
+	c.Flags().StringVar(&getGroupBy, "group-by", "", "count the rows per value of this field instead of listing them, e.g. --group-by template")
 	c.Flags().StringArrayVar(&getFilters, "filter", nil, "API filter KEY=VALUE, passed through (repeatable), e.g. status=failed or name__icontains=web")
 	c.Flags().StringVar(&getSearch, "search", "", "free-text search, as in the web UI")
-	c.Flags().StringVar(&getName, "name", "", "name contains this text (case-insensitive)")
 	c.Flags().IntVar(&getLimit, "limit", 0, "most rows to return (default: the context's default_limit, 100); -1 = all")
 	c.Flags().StringVar(&getOrder, "order", "", "sort field, prefix - for descending, e.g. -finished")
 	c.Flags().BoolVar(&getWide, "wide", false, "show every field in table output (JSON always has them)")
@@ -200,7 +251,12 @@ func init() {
 		if r.TimeField != "" {
 			c.Flags().StringVar(&getSince, "since", "", "only those newer than this: 30m, 24h, 7d, a date or RFC 3339")
 			c.Flags().StringVar(&getUntil, "until", "", "only those older than this (same forms as --since)")
+		}
+		if r.JobLike {
 			c.Flags().BoolVar(&getFailed, "failed", false, "only those that failed")
+		}
+		if r.JobLike || r.NameField != "" {
+			c.Flags().StringVar(&getName, "name", "", "name contains this text (case-insensitive)")
 		}
 		flags := make([]string, 0, len(r.Filters))
 		for flag := range r.Filters {

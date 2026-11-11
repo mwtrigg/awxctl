@@ -2,12 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mwtrigg/awxctl/internal/config"
 	"github.com/mwtrigg/awxctl/internal/fakeawx"
 )
 
@@ -334,5 +336,29 @@ func TestCapabilities(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("capabilities lacks %q", want)
 		}
+	}
+}
+
+func TestLaunchAllowlist(t *testing.T) {
+	patch := map[string]any{"id": 7, "name": "Patch"}
+	other := map[string]any{"id": 8, "name": "Wipe"}
+	open := &config.Context{}
+	listed := &config.Context{AllowedTemplates: []string{"Patch", "id:9"}}
+	if allowed(open, other) != nil {
+		t.Error("without a list a person may launch anything the token allows")
+	}
+	if allowed(listed, patch) != nil || allowed(listed, map[string]any{"id": 9, "name": "x"}) != nil {
+		t.Error("a listed name or id must be allowed")
+	}
+	var pe *config.PermissionError
+	if err := allowed(listed, other); !errors.As(err, &pe) {
+		t.Errorf("an unlisted template must be refused: %v", err)
+	}
+	t.Setenv("AWXCTL_FROM_MCP", "1")
+	if allowed(open, patch) == nil {
+		t.Error("over MCP an empty list allows nothing")
+	}
+	if allowed(listed, patch) != nil {
+		t.Error("over MCP a listed template is allowed")
 	}
 }

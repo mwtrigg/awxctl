@@ -305,19 +305,34 @@ var jobHostsCmd = &cobra.Command{
 }
 
 var workflowNodesCmd = &cobra.Command{
-	Use:   "workflow-nodes <workflow-job-id>",
-	Short: "List the nodes of a workflow job: which jobs it started and how they ended",
-	Args:  cobra.ExactArgs(1),
+	Use:   "workflow-nodes <workflow-job-id | --template name>",
+	Short: "List the nodes of a workflow job (which jobs it started and how they ended) or of a workflow template",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id, err := jobID(args[0])
-		if err != nil {
-			return err
+		tmpl, _ := cmd.Flags().GetString("template")
+		if (len(args) == 1) == (tmpl != "") {
+			return &usageError{"give a workflow job ID, or --template with a workflow template"}
 		}
 		_, _, client, err := connect()
 		if err != nil {
 			return err
 		}
-		nodes, _, err := client.List(cmd.Context(), "/workflow_jobs/"+strconv.Itoa(id)+"/workflow_nodes/", url.Values{"order_by": {"id"}}, 0)
+		var path string
+		if tmpl != "" {
+			wt := core.FindResource("workflow-templates")
+			o, err := client.Resolve(cmd.Context(), wt, tmpl, nil)
+			if err != nil {
+				return err
+			}
+			path = wt.Path + strconv.Itoa(core.ID(o)) + "/workflow_nodes/"
+		} else {
+			id, err := jobID(args[0])
+			if err != nil {
+				return err
+			}
+			path = "/workflow_jobs/" + strconv.Itoa(id) + "/workflow_nodes/"
+		}
+		nodes, _, err := client.List(cmd.Context(), path, url.Values{"order_by": {"id"}}, 0)
 		if err != nil {
 			return err
 		}
@@ -492,6 +507,7 @@ func init() {
 	jobHostsCmd.Flags().BoolVar(&getFailed, "failed", false, "only hosts that failed")
 	jobHostsCmd.Flags().IntVar(&getLimit, "limit", 0, "most rows to return; -1 = all")
 	launchInfoCmd.Flags().Bool("workflow", false, "the template is a workflow template")
+	workflowNodesCmd.Flags().String("template", "", "show the nodes of this workflow template instead of a workflow job")
 
 	getCmd.AddCommand(jobOutputCmd, jobEventsCmd, hostJobsCmd, jobHostsCmd, workflowNodesCmd, launchInfoCmd)
 	diagnoseCmd.AddCommand(diagnoseJobCmd)

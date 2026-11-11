@@ -2,10 +2,19 @@
 
 A command-line tool for the AWX and Ansible Automation Platform (AAP) controller API,
 built for agents and operators: one static binary, JSON by default, structured errors,
-safe by default.
+and safe by default (nothing changes without `--apply`).
 
-**Status: early development.** Today it can check a connection (`awxctl auth status`).
-Reads, job actions, changes, an MCP server and a terminal UI follow.
+**Status: pre-release.** The command set below works and is tested against AWX 24.6
+and AAP 2.7; there is no tagged release, installer or self-update yet.
+
+```
+awxctl diagnose job 1234                         # why did it fail, in one call
+awxctl get jobs --failed --since 24h --group-by template
+awxctl get job-output 1234 --grep 'fatal|FAILED' --context 3
+awxctl get host-jobs web1 --failed
+awxctl launch "Patch servers" --limit web1       # dry run: shows what would be sent
+awxctl launch "Patch servers" --limit web1 --apply --wait
+```
 
 ## Supported controllers
 
@@ -13,6 +22,7 @@ Reads, job actions, changes, an MCP server and a terminal UI follow.
 - AAP 2.5 and newer through the platform gateway (controller API under `/api/controller/v2`)
 
 awxctl detects which one it is talking to. Set `flavor: awx` or `flavor: aap` to pin it.
+Users, teams and organizations are read-only here: on AAP they belong to the gateway.
 
 ## Configuration
 
@@ -25,48 +35,161 @@ contexts:
   lab:
     url: https://awx.example.com
     api_token: "<token>"
-    permissions: readonly   # readonly | operator | write
-    # ca_file: /path/to/ca.pem
-    # flavor: auto          # auto | awx | aap
+    permissions: readonly          # readonly (default) | operator | write
+    # ca_file: /path/to/ca.pem     # private or self-signed controller
+    # flavor: auto                 # auto | awx | aap
+    # mode: dry-run                # dry-run (default) | apply
+    # allowed_templates: ["Patch servers", "id:42"]   # what may be launched
+    # default_limit: 100           # rows a list returns unless --limit says otherwise
+    # state_dir: ~/.local/state/awxctl   # audit records; state_keep: 200 newest
 ```
 
 | Variable | Meaning |
 |---|---|
 | `AWXCTL_CONTEXT` | context to use |
-| `AWXCTL_URL` | controller URL |
-| `AWXCTL_API_TOKEN` | API token |
+| `AWXCTL_URL`, `AWXCTL_API_TOKEN` | controller URL and token |
 | `AWXCTL_USERNAME`, `AWXCTL_PASSWORD` | basic authentication, when no token is set |
-| `AWXCTL_CA_FILE` | CA certificate (PEM) for a private or self-signed controller |
+| `AWXCTL_CA_FILE` | CA certificate (PEM) |
 | `AWXCTL_INSECURE` | `1` disables TLS verification |
 | `AWXCTL_FLAVOR` | `awx`, `aap` or `auto` |
 | `AWXCTL_PERMISSIONS` | lower the context's tier (it can never raise it) |
+| `AWXCTL_MODE` | `dry-run` or `apply` |
+| `AWXCTL_STATE_DIR`, `AWXCTL_STATE_KEEP`, `AWXCTL_BEFORE_STATE` | audit records: where, how many, on/off |
+
+`awxctl auth status` shows what a context reaches; `awxctl context list` and
+`awxctl context use <name>` manage contexts.
+
+## Reading
+
+`awxctl get <kind>` lists, `awxctl get <kind> <name-or-id>` shows one object with every
+field. Kinds: `jobs`, `unified-jobs` (every run of any type), `workflow-jobs`,
+`project-updates`, `inventory-updates`, `ad-hoc-commands`, `system-jobs`,
+`workflow-approvals`, `job-templates`, `workflow-templates`, `inventories`, `hosts`,
+`groups`, `inventory-sources`, `projects`, `credentials` (never their secrets),
+`credential-types`, `execution-environments`, `schedules`, `organizations`, `users`,
+`teams`, `role-definitions`, `role-user-assignments`, `role-team-assignments`,
+`notification-templates`, `notifications`, `labels`, `activity`, `instances`,
+`instance-groups`.
+
+| Flag | Meaning |
+|---|---|
+| `--filter KEY=VALUE` | any API filter, passed through (repeatable): `status=failed`, `name__icontains=web` |
+| `--name TEXT`, `--search TEXT` | name contains; free-text search |
+| `--since`, `--until` | `30m`, `24h`, `7d`, a date or RFC 3339 (job kinds, activity) |
+| `--failed` | only failed runs |
+| `--limit N` | most rows (default 100; `-1` = all); `meta.limit_reached` says when there are more |
+| `--order FIELD` | sort, `-` prefix for descending |
+| `--group-by FIELD` | count rows per value instead of listing them |
+| per kind | e.g. `--template`, `--inventory`, `--status`, `--project`, `--organization` |
+
+Objects are addressed by name or ID. `id:12` and `name:12` force one reading; a name
+that matches several objects is an error that lists their IDs. Hosts and groups take
+`--inventory` to say which inventory the name is in.
+
+About jobs:
+
+| Command | Answers |
+|---|---|
+| `diagnose job <id>` | why it failed: verdict, failed task results, failing hosts, workflow nodes |
+| `get job-output <id>` | the output, narrowed with `--tail`, `--head`, `--grep`/`--context`, saved with `--save`, streamed with `--follow --text` |
+| `get job-events <id>` | task results: `--failed`, `--changed`, `--host`, `--task` |
+| `get job-hosts <id>` | per-host counts (ok, changed, failures, unreachable) |
+| `get host-jobs <host>` | the jobs that ran against a host, with the host's result in each |
+| `get workflow-nodes <id>` | the jobs a workflow started (`--template` for a workflow template) |
+| `get launch-info <template>` | what a template prompts for, its defaults and survey questions |
+| `wait <id>` | block until it ends; exit 0 only if successful |
+
+Output is `{"data": [...], "meta": {...}}`; `-o table|jsonl|csv` change the format and
+`--field NAME` prints one field per line.
+
+## Changing things
+
+Every changing command is a **dry run unless `--apply`** (alias `--yes`) is given, or
+the context says `mode: apply` (then `--dry-run` forces a dry run). The dry run prints
+exactly what would be sent. `--expect N` refuses to run unless exactly N objects would
+change.
+
+| Command | Tier | Does |
+|---|---|---|
+| `launch <template>` | operator | launch a job template (`--workflow`: a workflow template); `--limit`, `--tags`, `--skip-tags`, `-e NAME=VALUE`, `--extra-vars-file`, `--inventory`, `--check`, `--wait`, `--follow` |
+| `relaunch <job-id>` | operator | run again; `--hosts failed` only on the hosts that failed |
+| `cancel <job-id>...` | operator | cancel running jobs |
+| `sync projects\|inventory-sources <name>...` | operator | start a sync |
+| `approve`, `deny <approval-id>...` | operator | answer workflow approvals |
+| `enable`, `disable hosts\|schedules <name>...` | operator | switch hosts or schedules on and off |
+| `create <kind> [name] --set FIELD=VALUE` | write | create an object; `--file`, `--set-file FIELD=PATH` |
+| `update <kind> <name>... --set FIELD=VALUE` | write | change fields; only those that differ are sent |
+| `delete <kind> <name>...` | write | delete; the dry run shows what goes with it |
+| `attach`, `detach <kind> <name>... --to KIND=NAME` | write | hosts and groups of a group, credentials of a job template, users of a team |
+| `run command --inventory --limit --credential --module` | write | an ad hoc command |
+| `api post\|patch\|put\|delete <path>` | write | any API path (`api get` reads) |
+
+Launch safety:
+
+- An option the template does not prompt for is **refused**. The controller would
+  ignore it silently, and an ignored `--limit` means a run against every host.
+- `--check` is Ansible check mode: a real job. `--dry-run` sends nothing.
+- `allowed_templates` in the context limits what can be launched.
+- Passwords a template asks for at launch are not supported.
+
+Audit records: an applied change first writes a record (what is sent, the state
+before, secrets masked) to `~/.local/state/awxctl`, then updates it with each outcome.
+`awxctl state list` and `awxctl state show <file>` read them. There is no undo
+command; the record is what you would restore from by hand. If the record cannot be
+written, nothing is sent. A change whose outcome is unknown (timeout, 502) stops the
+run with exit 7: check before retrying, awxctl never retries a change.
+
+Secrets: values of secret-looking fields are shown as `******` in all output and
+records. Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
+stdin), not on the command line.
+
+## For agents
+
+- `awxctl llm capabilities` prints everything as one JSON document: conventions,
+  commands with flags, kinds with fields and filters, exit codes.
+- `awxctl mcp` serves the same commands as an MCP server over stdio:
+
+  ```json
+  {"mcpServers": {"awx": {"command": "awxctl", "args": ["-c", "lab", "mcp"]}}}
+  ```
+
+  Read-only by default. With `--allow-writes` the changing tools appear, and each is
+  still a dry run unless called with `apply: true`. Over MCP a template can only be
+  launched if it is in `allowed_templates`; ad hoc commands, `api`, context switching
+  and flags that read or write local files are never offered. Each call runs awxctl
+  as a child process that enforces the same rules.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | error |
+| 1 | error, or a job that did not end successful (`--wait`, `wait`) |
 | 2 | not found |
 | 3 | authentication failed |
 | 4 | cannot reach the controller |
 | 5 | bad flags, arguments or configuration |
 | 6 | controller version not supported |
 | 7 | a change was sent but its outcome is unknown: check before retrying |
-| 8 | not permitted (permission tier, or denied by the controller) |
+| 8 | not permitted (permission tier, allowlist, or denied by the controller) |
 
 Errors are printed to stderr as `{"error": "...", "kind": "...", "code": N}`.
 
 ## Security model
 
-- The permission tiers, the dry-run default and the allowlists in awxctl are guardrails
-  against mistakes. They are not a security boundary: anything that can run awxctl as
-  your user can also read the config file and call the API directly.
+- The permission tiers, the dry-run default, the allowlist and the MCP restrictions are
+  guardrails against mistakes. They are not a security boundary: anything that can run
+  programs as your user can read the config file and call the API directly.
 - Real enforcement is the token. Give each use a token for a controller user that has
-  only the roles it needs; use a read-only user (system auditor) for reporting and agents
-  that only look.
+  only the roles it needs; use a read-only user (system auditor) for reporting and for
+  agents that only look.
+- Text that comes from the controller (names, job output, messages) is written by
+  third parties. awxctl escapes control characters in tables and marks MCP results as
+  data, but an agent must still treat it as data, not instructions.
 - awxctl never prints the token, never follows redirects (a redirect could carry the
-  token to another host), and never retries a request that changes something.
+  token to another host), and only follows paging links on the same host.
+- Job extra variables are visible to anyone who can read the job in the controller;
+  masking in awxctl's own output does not change that.
 
 ## Build
 

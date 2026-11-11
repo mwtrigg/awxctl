@@ -379,7 +379,7 @@ whose path starts with the given text (for example --command "get jobs").`,
 			}
 			sort.Strings(filters)
 			k := map[string]any{"kind": r.Kind, "aliases": r.Aliases, "addressed_by": "id", "fields": fields, "filter_flags": filters,
-				"time_flags": r.TimeField != "", "writable_fields": r.Writable, "deletable": r.Deletable()}
+				"time_flags": r.TimeField != "", "failed_flag": r.JobLike, "name_flag": r.JobLike || r.NameField != "", "writable_fields": r.Writable, "deletable": r.Deletable()}
 			if r.NameField != "" {
 				k["addressed_by"] = r.NameField + " or id:<n>"
 			}
@@ -392,7 +392,7 @@ whose path starts with the given text (for example --command "get jobs").`,
 			"conventions": []string{
 				"Output is JSON by default: {\"data\": [rows], \"meta\": {count, limit, limit_reached}}. -o table|jsonl|csv change it; --field NAME prints one field per line.",
 				"Errors go to stderr as {\"error\", \"kind\", \"code\"}; the exit code is the same code.",
-				"Reading: `awxctl get <kind>` lists (every kind takes --filter KEY=VALUE, --name, --search, --limit, --order; job kinds take --since, --until, --failed); `awxctl get <kind> <name-or-id>` shows one object with every field.",
+				"Reading: `awxctl get <kind>` lists (every kind takes --filter KEY=VALUE, --search, --limit, --order; named kinds take --name; job kinds take --since, --until, --failed); `awxctl get <kind> <name-or-id>` shows one object with every field.",
 				"A list stops at the limit (default 100): meta.limit_reached true means there are more; raise --limit or use --limit -1.",
 				"Objects are named by name or by ID; id:<n> and name:<text> force one reading. An ambiguous name is an error that lists the IDs.",
 				"Changing commands are a dry run unless --apply is given: the dry run prints exactly what would be sent. --expect N refuses to run unless exactly N objects would change.",
