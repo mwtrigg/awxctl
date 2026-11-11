@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Step is one change to one object. A plan is built first, with everything
@@ -29,11 +31,16 @@ type Step struct {
 	Result map[string]any `json:"result,omitempty"`
 	Error  string         `json:"error,omitempty"`
 
+	raw    Object
 	body   any                                                    // the real body
 	verify func(ctx context.Context, c *Client, res Object) error // proves the change, optional
 	result func(res Object) map[string]any                        // picks the result fields, optional
 	apply  func(ctx context.Context, c *Client) (Object, error)   // overrides the plain request, optional
 }
+
+// Raw is the controller's answer to an applied step. It is not part of the plan's
+// JSON or of the audit record: a new token's value is only here.
+func (s *Step) Raw() Object { return s.raw }
 
 // Plan is what a changing command would do. The CLI prints it, MCP returns it and
 // the TUI shows it for confirmation; Apply runs it.
@@ -84,7 +91,7 @@ func (p *Plan) Apply(ctx context.Context, c *Client, rec Recorder) error {
 		var unknown *OutcomeUnknownError
 		switch {
 		case err == nil:
-			s.Status = "applied"
+			s.Status, s.raw = "applied", res
 			if s.result != nil {
 				s.Result = s.result(res)
 			}
@@ -122,6 +129,10 @@ func Mask(v any) any {
 				out[k] = "******"
 				continue
 			}
+			if text, ok := val.(string); ok && structuredText[k] {
+				out[k] = maskText(text)
+				continue
+			}
 			out[k] = Mask(val)
 		}
 		return out
@@ -133,6 +144,28 @@ func Mask(v any) any {
 		return out
 	}
 	return v
+}
+
+// structuredText are the fields whose text is itself a JSON or YAML mapping of
+// variables, which can hold secrets.
+var structuredText = map[string]bool{"variables": true, "extra_vars": true, "source_vars": true, "extra_data": true}
+
+// maskText masks the secret-looking values inside variables given as text. Text
+// that is not a mapping is returned as it is.
+func maskText(text string) string {
+	var obj map[string]any
+	if strings.TrimSpace(text) == "" || yaml.Unmarshal([]byte(text), &obj) != nil || obj == nil {
+		return text
+	}
+	masked := Mask(obj).(map[string]any)
+	if same(masked, obj) {
+		return text // nothing to hide: keep the text exactly as written
+	}
+	b, err := json.Marshal(masked)
+	if err != nil {
+		return "******"
+	}
+	return string(b)
 }
 
 func maskMap(m map[string]any) map[string]any {

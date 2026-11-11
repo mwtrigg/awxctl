@@ -117,7 +117,23 @@ func TestDryRunSendsNothing(t *testing.T) {
 	srv.Add("/groups/60/hosts/", map[string]any{"id": 4, "name": "web2"})
 	srv.Add("/workflow_approvals/", map[string]any{"id": 70, "name": "ok?", "status": "pending"})
 	srv.Add("/credentials/", map[string]any{"id": 80, "name": "deploy"})
+	srv.Add("/users/", map[string]any{"id": 90, "username": "ann"})
+	srv.Add("/role_definitions/", map[string]any{"id": 91, "name": "Inventory Use", "content_type": "awx.inventory"})
+	srv.Add("/role_user_assignments/", map[string]any{"id": 92, "role_definition": 91, "user": 90, "object_id": 2})
+	srv.Add("/role_user_assignments/", map[string]any{"id": 93, "role_definition": 999, "user": 90, "object_id": 999})
+	srv.Add("/tokens/", map[string]any{"id": 94, "description": "x"})
+	srv.Handle("/inventories/2/copy/", func(w http.ResponseWriter, _ *http.Request) { fakeawx.JSON(w, 200, map[string]any{"can_copy": true}) })
+	srv.Handle("/job_templates/7/survey_spec/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"spec": []map[string]any{{"variable": "old", "question_name": "Old?", "type": "text", "required": true}}})
+	})
+	survey := filepath.Join(t.TempDir(), "q.yml")
+	_ = os.WriteFile(survey, []byte("questions:\n  - variable: release\n"), 0o600)
 	cases := map[string][]string{
+		"token":    {"token", "create", "--description", "agent", "--scope", "read"},
+		"grant":    {"grant", "Inventory Use", "--user", "ann", "--on", "inventories=lab", "--dry-run"},
+		"revoke":   {"revoke", "Inventory Use", "--user", "ann", "--on", "inventories=lab"},
+		"copy":     {"copy", "inventories", "lab", "--name", "lab2"},
+		"set":      {"set", "survey", "Patch", "--file", survey},
 		"launch":   {"launch", "Patch", "--limit", "web1", "-e", "a=1"},
 		"relaunch": {"relaunch", "12"},
 		"cancel":   {"cancel", "12"},
@@ -138,6 +154,12 @@ func TestDryRunSendsNothing(t *testing.T) {
 		out, errOut, code := runCLI(t, env, args...)
 		if code != 0 {
 			t.Errorf("%s: dry run failed, exit %d: %s", name, code, errOut)
+			continue
+		}
+		if name == "grant" { // ann already has the role: nothing to do
+			if !strings.Contains(errOut, "nothing to change") {
+				t.Errorf("grant of a role that is already held: %s", errOut)
+			}
 			continue
 		}
 		if !strings.Contains(out, `"status": "planned"`) || !strings.Contains(errOut, "dry run: nothing was changed") {
@@ -215,6 +237,9 @@ func TestSecretsStayOffTheCommandLine(t *testing.T) {
 	_, errOut, code := runCLI(t, env, "create", "credentials", "x", "--set", "inputs={\"password\":\"p\"}")
 	if code != 5 || !strings.Contains(errOut, "--set-file") {
 		t.Errorf("a secret given with --set must be refused: exit %d %s", code, errOut)
+	}
+	if a := strings.Join(maskArgs([]string{"create", "hosts", "h", "--set", `variables={"ansible_password":"hunter2","ntp":"a"}`, `--set=variables={"become_pass":"hunter3"}`}), " "); strings.Contains(a, "hunter") || !strings.Contains(a, "ntp") {
+		t.Errorf("maskArgs must look inside variables: %s", a)
 	}
 	got := maskArgs([]string{"launch", "t", "-e", "api_token=abc", "--extra-vars={\"db_password\":\"x\",\"n\":1}", "--limit=web1", "note=fine"})
 	joined := strings.Join(got, " ")

@@ -175,18 +175,18 @@ var resources = []*Resource{
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("description", "DESCRIPTION"),
 			ff("job_templates", "TEMPLATES", "summary_fields.related_field_counts.job_templates"), ff("inventories", "INVENTORIES", "summary_fields.related_field_counts.inventories"),
 			ff("projects", "PROJECTS", "summary_fields.related_field_counts.projects"), ff("users", "USERS", "summary_fields.related_field_counts.users"),
-			ff("teams", "TEAMS", "summary_fields.related_field_counts.teams"), w("max_hosts")},
-		Writable: []string{"name", "description", "max_hosts", "default_environment"},
-		Refs:     map[string]string{"default_environment": "execution-environments"}},
+			ff("teams", "TEAMS", "summary_fields.related_field_counts.teams"), w("max_hosts")}},
 	{Kind: "users", Singular: "user", Path: "/users/", NameField: "username", Order: "username",
 		Fields: []Field{f("id", "ID"), f("username", "USERNAME"), f("first_name", "FIRST"), f("last_name", "LAST"), f("email", "EMAIL"),
-			f("is_superuser", "SUPERUSER"), f("is_system_auditor", "AUDITOR"), f("last_login", "LAST LOGIN"), w("created")},
+			f("is_superuser", "SUPERUSER"), ff("is_auditor", "AUDITOR", "is_system_auditor|is_platform_auditor"), f("last_login", "LAST LOGIN"), w("created")},
 		Filters: map[string]string{"superuser": "is_superuser"}},
 	{Kind: "teams", Singular: "team", Path: "/teams/", NameField: "name", Order: "name",
-		Fields:   []Field{f("id", "ID"), f("name", "NAME"), ff("organization", "ORG", "summary_fields.organization.name"), f("description", "DESCRIPTION")},
-		Filters:  map[string]string{"organization": "organization__name"},
-		Writable: []string{"name", "description", "organization"},
-		Refs:     map[string]string{"organization": "organizations"}},
+		Fields:  []Field{f("id", "ID"), f("name", "NAME"), ff("organization", "ORG", "summary_fields.organization.name"), f("description", "DESCRIPTION")},
+		Filters: map[string]string{"organization": "organization__name"}},
+	{Kind: "tokens", Singular: "token", Path: "/tokens/", Order: "-id", Secret: true,
+		Fields: []Field{f("id", "ID"), ff("user", "USER", "summary_fields.user.username"), f("description", "DESCRIPTION"), f("scope", "SCOPE"),
+			f("expires", "EXPIRES"), ff("application", "APPLICATION", "summary_fields.application.name"), f("created", "CREATED"), w("last_used"), wf("user_id", "user")},
+		Filters: map[string]string{"user": "user__username", "scope": "scope"}},
 	{Kind: "role-definitions", Singular: "role definition", Path: "/role_definitions/", NameField: "name", Order: "name",
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("content_type", "APPLIES TO"), f("managed", "MANAGED"), w("description"), w("permissions")}},
 	{Kind: "role-user-assignments", Singular: "role user assignment", Path: "/role_user_assignments/", Order: "-id",
@@ -223,7 +223,7 @@ var resources = []*Resource{
 var unifiedTemplates = &Resource{Kind: "unified-job-templates", Singular: "template", Path: "/unified_job_templates/", NameField: "name"}
 
 // deleteOnly are the kinds that can be deleted but not created or updated here.
-var deleteOnly = map[string]bool{"jobs": true, "workflow-jobs": true, "project-updates": true, "inventory-updates": true, "ad-hoc-commands": true}
+var deleteOnly = map[string]bool{"tokens": true, "jobs": true, "workflow-jobs": true, "project-updates": true, "inventory-updates": true, "ad-hoc-commands": true}
 
 // Deletable reports whether objects of this kind can be deleted with awxctl.
 func (r *Resource) Deletable() bool { return r.Writable != nil || deleteOnly[r.Kind] }
@@ -263,7 +263,12 @@ func (r *Resource) Row(o Object) map[string]any {
 		if from == "" {
 			from = fd.Key
 		}
-		v := Lookup(o, from)
+		var v any
+		for _, alt := range strings.Split(from, "|") { // first path that has a value
+			if v = Lookup(o, alt); v != nil {
+				break
+			}
+		}
 		if list, ok := v.([]any); ok && strings.HasSuffix(from, ".results") { // summary lists: keep the names
 			names := make([]any, 0, len(list))
 			for _, it := range list {
@@ -280,6 +285,8 @@ func (r *Resource) Row(o Object) map[string]any {
 			}
 		} else if m, ok := v.(map[string]any); ok && fd.Key == "extra_data" {
 			v = Mask(m)
+		} else if text, isText := v.(string); isText && structuredText[fd.Key] {
+			v = maskText(text) // variables: secret-looking values hidden (get variables --show-secrets shows them)
 		}
 		row[fd.Key] = v
 	}

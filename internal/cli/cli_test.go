@@ -36,14 +36,17 @@ func runCLI(t *testing.T, env map[string]string, args ...string) (string, string
 	outR, outW, _ := os.Pipe()
 	errR, errW, _ := os.Pipe()
 	os.Stdout, os.Stderr = outW, errW
+	// Read while the command runs: output larger than the pipe buffer would
+	// otherwise block it for ever.
+	outCh, errCh := make(chan []byte), make(chan []byte)
+	go func() { b, _ := io.ReadAll(outR); outCh <- b }()
+	go func() { b, _ := io.ReadAll(errR); errCh <- b }()
 	rootCmd.SetArgs(args)
 	code := Execute()
 	outW.Close()
 	errW.Close()
 	os.Stdout, os.Stderr = oldOut, oldErr
-	out, _ := io.ReadAll(outR)
-	errOut, _ := io.ReadAll(errR)
-	return string(out), string(errOut), code
+	return string(<-outCh), string(<-errCh), code
 }
 
 func TestAuthStatusBothFlavors(t *testing.T) {

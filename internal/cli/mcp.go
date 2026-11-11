@@ -26,7 +26,7 @@ import (
 // can also run programs as this user can call awxctl or the API directly.
 
 // mcpDeniedCommands are never offered over MCP and are refused by the child too.
-var mcpDeniedCommands = []string{"run", "api", "mcp", "context use", "completion", "wait"}
+var mcpDeniedCommands = []string{"run", "api", "mcp", "context use", "completion", "wait", "token"}
 
 // mcpDeniedFlags read or write local files, switch the connection, weaken TLS or
 // never end; none is offered, and the child refuses them however they arrive.

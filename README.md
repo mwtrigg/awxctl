@@ -21,8 +21,17 @@ awxctl launch "Patch servers" --limit web1 --apply --wait
 - AWX (API under `/api/v2`)
 - AAP 2.5 and newer through the platform gateway (controller API under `/api/controller/v2`)
 
-awxctl detects which one it is talking to. Set `flavor: awx` or `flavor: aap` to pin it.
-Users, teams and organizations are read-only here: on AAP they belong to the gateway.
+awxctl reads the API index (`/api/`) to find out which one it is talking to and where
+its services are, so a moved prefix is followed, not guessed. Set `flavor: awx` or
+`flavor: aap` to pin it.
+
+On AAP 2.5 and newer, identity and access moved from the controller to the platform
+gateway (`/api/gateway/v1`): users, teams, organizations, tokens, role definitions and
+role assignments. The controller's copies still answer but are deprecated. awxctl
+reads and writes those kinds on the gateway when there is one, and on the controller
+for AWX; everything else (jobs, templates, inventories, projects, ...) is the
+controller's on both. Users, teams and organizations are read-only in awxctl.
+Event-Driven Ansible and Automation Hub are not covered.
 
 ## Configuration
 
@@ -67,7 +76,8 @@ field. Kinds: `jobs`, `unified-jobs` (every run of any type), `workflow-jobs`,
 `workflow-approvals`, `job-templates`, `workflow-templates`, `inventories`, `hosts`,
 `groups`, `inventory-sources`, `projects`, `credentials` (never their secrets),
 `credential-types`, `execution-environments`, `schedules`, `organizations`, `users`,
-`teams`, `role-definitions`, `role-user-assignments`, `role-team-assignments`,
+`teams`, `tokens` (never their values), `role-definitions`, `role-user-assignments`,
+`role-team-assignments`,
 `notification-templates`, `notifications`, `labels`, `activity`, `instances`,
 `instance-groups`.
 
@@ -99,6 +109,18 @@ About jobs:
 | `get launch-info <template>` | what a template prompts for, its defaults and survey questions |
 | `wait <id>` | block until it ends; exit 0 only if successful |
 
+About everything else:
+
+| Command | Answers |
+|---|---|
+| `get host-facts <host>` | the facts last gathered for a host (`--fact ansible_distribution`) |
+| `get variables hosts\|groups\|inventories <name>` | its variables; `--merged` shows what a host ends up with and where each value comes from |
+| `get project-files <project>` | the playbooks and inventory files of a project |
+| `get schedule-runs <schedule>` | the next runs (`--rrule` previews a rule before you save it) |
+| `get survey <template>` | the survey, in the form `set survey` takes (`--save` to edit it) |
+| `get workflow-graph <workflow>` | nodes and links, in the form `set workflow-graph` takes |
+| `get access <kind> <name>` | who has which role on an object |
+
 Output is `{"data": [...], "meta": {...}}`; `-o table|jsonl|csv` change the format and
 `--field NAME` prints one field per line.
 
@@ -120,9 +142,41 @@ change.
 | `create <kind> [name] --set FIELD=VALUE` | write | create an object; `--file`, `--set-file FIELD=PATH` |
 | `update <kind> <name>... --set FIELD=VALUE` | write | change fields; only those that differ are sent |
 | `delete <kind> <name>...` | write | delete; the dry run shows what goes with it |
-| `attach`, `detach <kind> <name>... --to KIND=NAME` | write | hosts and groups of a group, credentials of a job template, users of a team |
+| `attach`, `detach <kind> <name>... --to KIND=NAME` | write | hosts and groups of a group, credentials of a job template, a notification template (`--on started\|success\|error`) |
+| `copy <kind> <name> --name NEW` | write | copy a template, inventory, project, credential, ... |
+| `set survey <template> --file \| --remove` | write | replace or remove a survey |
+| `set workflow-graph <workflow> --file` | write | make a workflow's nodes and links match a file |
+| `grant`, `revoke <role> --user\|--team [--on KIND=NAME]` | write | give or take a role |
+| `token create --description --scope [--user]` | write | create an API token (delete with `delete tokens <id>`) |
 | `run command --inventory --limit --credential --module` | write | an ad hoc command |
 | `api post\|patch\|put\|delete <path>` | write | any API path (`api get` reads) |
+
+Workflows are edited as a whole, from a file, instead of node by node:
+
+```yaml
+nodes:
+  - id: build
+    template: Build image
+    on_success: [approve]
+    on_failure: [notify]
+  - id: approve
+    approval:
+      name: Release this build
+      timeout: 3600
+    on_success: [deploy]
+  - id: deploy
+    template: Deploy
+  - id: notify
+    template: Send alert
+```
+
+`awxctl get workflow-graph <workflow> --save graph.yml` writes the current graph in
+this form. Edit it, then `awxctl set workflow-graph <workflow> --file graph.yml` works
+out what to create, change, link and delete (nodes are matched by `id`) and shows
+every step before `--apply` does any of them. Cycles and unknown names are refused.
+
+A new token's value is shown once, in the result of `token create --apply` (or
+written to a file with `--save`), and is never in the dry run or the audit record.
 
 Launch safety:
 
@@ -140,7 +194,7 @@ written, nothing is sent. A change whose outcome is unknown (timeout, 502) stops
 run with exit 7: check before retrying, awxctl never retries a change.
 
 Secrets: values of secret-looking fields are shown as `******` in all output and
-records. Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
+records, including inside `variables` and `extra_vars` text. Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
 stdin), not on the command line.
 
 ## For agents
@@ -156,7 +210,8 @@ stdin), not on the command line.
   Read-only by default. With `--allow-writes` the changing tools appear, and each is
   still a dry run unless called with `apply: true`. Over MCP a template can only be
   launched if it is in `allowed_templates`; ad hoc commands, `api`, context switching
-  and flags that read or write local files are never offered. Each call runs awxctl
+  token creation and flags that read or write local files (so also `set survey`
+  and `set workflow-graph`) are never offered. Each call runs awxctl
   as a child process that enforces the same rules.
 
 ## Exit codes

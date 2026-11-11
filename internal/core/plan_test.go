@@ -262,6 +262,16 @@ func TestMask(t *testing.T) {
 			t.Errorf("leaked %s in %s", leak, out)
 		}
 	}
+	vars := Mask(map[string]any{"variables": `{"ntp": "a", "ansible_password": "hunter2"}`, "extra_vars": "db_password: hunter2\nn: 1\n", "source_vars": "plain text", "description": `{"password": "kept: not a variables field"}`}).(map[string]any)
+	if strings.Contains(vars["variables"].(string)+vars["extra_vars"].(string), "hunter2") || !strings.Contains(vars["variables"].(string), `"ntp":"a"`) {
+		t.Errorf("secrets inside variables text must be masked: %v", vars)
+	}
+	if vars["source_vars"] != "plain text" || !strings.Contains(vars["description"].(string), "kept") {
+		t.Errorf("text that is not a variables mapping stays: %v", vars)
+	}
+	if same := Mask(map[string]any{"variables": "a: 1\n# comment\n"}).(map[string]any)["variables"]; same != "a: 1\n# comment\n" {
+		t.Errorf("variables without secrets keep their exact text: %q", same)
+	}
 	if !strings.Contains(string(out), `"ssh_password"`) || !strings.Contains(string(out), `"ok":1`) || in["password"] != "p" {
 		t.Errorf("names of needed passwords and plain values stay, and the input is not changed: %s", out)
 	}

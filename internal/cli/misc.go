@@ -281,7 +281,8 @@ type FlagInfo struct {
 
 // writeCommands are the top-level commands that change things.
 var writeCommands = map[string]bool{"launch": true, "relaunch": true, "cancel": true, "sync": true, "approve": true, "deny": true,
-	"create": true, "update": true, "delete": true, "enable": true, "disable": true, "attach": true, "detach": true, "run": true}
+	"create": true, "update": true, "delete": true, "enable": true, "disable": true, "attach": true, "detach": true, "run": true,
+	"token": true, "grant": true, "revoke": true, "copy": true, "set": true}
 
 func commandWrites(c *cobra.Command) bool {
 	parts := strings.Fields(c.CommandPath())

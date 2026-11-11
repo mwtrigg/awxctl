@@ -92,6 +92,7 @@ type Client struct {
 
 	flavor  Flavor // pinned by config, or set by Detect
 	apiPath string // "/api/v2" or "/api/controller/v2"; empty until Detect
+	gwPath  string // "/api/gateway/v1" on AAP 2.5+; empty on AWX
 
 	// backoff is the wait before retry n (1-based); tests shorten it.
 	backoff func(n int) time.Duration
@@ -151,6 +152,9 @@ func NewClient(ctx *config.Context, opts Options) (*Client, error) {
 	}
 	if flavor != FlavorAuto {
 		c.apiPath = flavor.apiPath()
+	}
+	if flavor == FlavorAAP {
+		c.gwPath = "/api/gateway/v1"
 	}
 	return c, nil
 }

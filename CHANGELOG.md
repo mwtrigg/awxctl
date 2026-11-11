@@ -11,3 +11,13 @@ First working command set (no release yet).
   enable, disable, create, update, delete, attach, detach, ad hoc commands, raw `api`.
 - Permission tiers, launch allowlist, `--expect`, audit records with masked secrets.
 - `llm capabilities` and an MCP server (`mcp`).
+- AAP gateway: the API index is read to find the services; users, teams,
+  organizations, tokens and role assignments are read and written on the platform
+  gateway when there is one.
+- Tokens (`token create`, `get tokens`, `delete tokens`), role grants (`grant`,
+  `revoke`, `get access`).
+- Host facts, variables with `--merged`, project files, schedule previews.
+- `copy`, survey editing (`get survey`, `set survey`), notification templates on
+  `attach`/`detach`.
+- Workflow editing from a file (`get workflow-graph`, `set workflow-graph`).
+- Users, teams and organizations are read-only.

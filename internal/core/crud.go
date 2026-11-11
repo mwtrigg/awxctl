@@ -26,7 +26,8 @@ func (c *Client) prepare(ctx context.Context, r *Resource, values map[string]any
 		}
 		if kind, isRef := r.Refs[k]; isRef && v != nil {
 			if s, ok := v.(string); ok && s != "" {
-				target, err := c.Resolve(ctx, FindResource(kind), s, nil)
+				// a controller object points at the controller's own ID of the target
+				target, err := c.Resolve(ControllerOnly(ctx), FindResource(kind), s, nil)
 				if err != nil {
 					return nil, fmt.Errorf("%s: %w", k, err)
 				}
@@ -153,7 +154,7 @@ func (c *Client) PlanDelete(ctx context.Context, r *Resource, refs []string, sco
 			continue
 		}
 		seen[ID(o)] = true
-		if st, _ := o["status"].(string); deleteOnly[r.Kind] && !Finished(st) {
+		if st, _ := o["status"].(string); r.JobLike && !Finished(st) {
 			return nil, usagef("%s is %s: cancel it first", label(r, o), st)
 		}
 		impact, err := c.impact(ctx, r, o)
@@ -259,8 +260,6 @@ var relations = map[string]map[string]string{
 	"job-templates":      {"credentials": "credentials", "labels": "labels", "instance-groups": "instance_groups"},
 	"workflow-templates": {"labels": "labels"},
 	"inventories":        {"instance-groups": "instance_groups"},
-	"organizations":      {"instance-groups": "instance_groups"},
-	"teams":              {"users": "users"},
 }
 
 // Relations describes what attach and detach accept, for help and the manifest.

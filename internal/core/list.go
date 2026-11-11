@@ -28,6 +28,35 @@ func (c *Client) ready(ctx context.Context) error {
 // APIPath is the detected API prefix ("" before the first request).
 func (c *Client) APIPath() string { return c.apiPath }
 
+// OnGateway reports whether identity and access live on the AAP gateway.
+func (c *Client) OnGateway() bool { return c.gwPath != "" }
+
+type controllerOnlyKey struct{}
+
+// ControllerOnly makes requests under ctx go to the controller even for the
+// kinds the gateway owns. Controller objects point at the controller's own IDs
+// of organizations and users, which are not the gateway's IDs.
+func ControllerOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, controllerOnlyKey{}, true)
+}
+
+// gatewayOwned are the collections that moved from the controller to the
+// platform gateway in AAP 2.5: the controller's copies are deprecated there.
+var gatewayOwned = []string{"/users/", "/teams/", "/organizations/", "/tokens/", "/role_definitions/", "/role_user_assignments/", "/role_team_assignments/"}
+
+// abs turns a path under the API prefix into a server path. On AAP the kinds the
+// gateway owns are read from and written to the gateway.
+func (c *Client) abs(ctx context.Context, rel string) string {
+	if c.gwPath != "" && ctx.Value(controllerOnlyKey{}) == nil && !strings.Contains(rel, "/instance_groups/") {
+		for _, g := range gatewayOwned {
+			if strings.HasPrefix(rel, g) {
+				return c.gwPath + rel
+			}
+		}
+	}
+	return c.apiPath + rel
+}
+
 // List reads a collection (rel is relative to the API prefix, e.g. "/jobs/") and
 // follows the pages until limit objects are read; limit <= 0 reads everything.
 // total is the server's count of matching objects.
@@ -43,7 +72,7 @@ func (c *Client) List(ctx context.Context, rel string, q url.Values, limit int) 
 		size = limit
 	}
 	q.Set("page_size", strconv.Itoa(size))
-	next := c.apiPath + rel + "?" + q.Encode()
+	next := c.abs(ctx, rel) + "?" + q.Encode()
 	for next != "" {
 		var page struct {
 			Count   int      `json:"count"`
@@ -78,7 +107,7 @@ func (c *Client) Get(ctx context.Context, rel string) (Object, error) {
 		return nil, err
 	}
 	var o Object
-	if err := c.get(ctx, c.apiPath+rel, &o); err != nil {
+	if err := c.get(ctx, c.abs(ctx, rel), &o); err != nil {
 		return nil, err
 	}
 	return o, nil
@@ -90,7 +119,7 @@ func (c *Client) GetText(ctx context.Context, rel string) (string, error) {
 		return "", err
 	}
 	var raw rawText
-	if err := c.get(ctx, c.apiPath+rel, &raw); err != nil {
+	if err := c.get(ctx, c.abs(ctx, rel), &raw); err != nil {
 		return "", err
 	}
 	return string(raw), nil
@@ -105,7 +134,7 @@ func (c *Client) Send(ctx context.Context, method, rel string, body any) (Object
 		return nil, err
 	}
 	var raw json.RawMessage
-	if err := c.do(ctx, method, c.apiPath+rel, body, &raw); err != nil {
+	if err := c.do(ctx, method, c.abs(ctx, rel), body, &raw); err != nil {
 		return nil, err
 	}
 	var o Object
@@ -248,4 +277,12 @@ func Lookup(o Object, path string) any {
 		cur = m[part]
 	}
 	return cur
+}
+
+// GetAny reads a path whose answer is not an object (a list of file names).
+func (c *Client) GetAny(ctx context.Context, rel string, out any) error {
+	if err := c.ready(ctx); err != nil {
+		return err
+	}
+	return c.get(ctx, c.abs(ctx, rel), out)
 }

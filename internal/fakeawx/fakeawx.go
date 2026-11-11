@@ -30,6 +30,7 @@ type Request struct {
 type Server struct {
 	*httptest.Server
 	Prefix  string // "/api/v2" or "/api/controller/v2"
+	NoIndex bool   // true: /api/ is not served, as behind some proxies
 	Version string
 
 	mu       sync.Mutex
@@ -94,6 +95,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(forced)
 		return
 	}
+	if r.URL.Path == "/api/" && !s.NoIndex {
+		if s.Prefix == "/api/v2" {
+			JSON(w, http.StatusOK, map[string]any{"description": "AWX REST API", "current_version": "/api/v2/", "available_versions": map[string]any{"v2": "/api/v2/"}})
+		} else {
+			JSON(w, http.StatusOK, map[string]any{"description": "AAP gateway REST API", "apis": map[string]any{"gateway": "/api/gateway/", "controller": "/api/controller/"}})
+		}
+		return
+	}
+	if gw := "/api/gateway/v1"; s.Prefix != "/api/v2" && strings.HasPrefix(r.URL.Path, gw+"/") {
+		// the gateway half of an AAP: its own collections, stored under "gw:"
+		if r.Header.Get("Authorization") != "Bearer "+Token {
+			JSON(w, http.StatusUnauthorized, map[string]any{"detail": "Authentication credentials were not provided."})
+			return
+		}
+		if !s.serveStoreAt(w, r, body, gw, "gw:") {
+			JSON(w, http.StatusNotFound, map[string]any{"detail": "Not found."})
+		}
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, s.Prefix+"/") {
 		// The other flavor's path: a real server answers 404 with an HTML page.
 		w.Header().Set("Content-Type", "text/html")
@@ -152,7 +172,13 @@ func (s *Server) Collection(collection string) []map[string]any {
 }
 
 func (s *Server) serveStore(w http.ResponseWriter, r *http.Request, body []byte) bool {
-	rel := strings.TrimPrefix(r.URL.Path, s.Prefix)
+	return s.serveStoreAt(w, r, body, s.Prefix, "")
+}
+
+// serveStoreAt serves the collections stored under keyPrefix at the URL prefix.
+// Gateway collections are added as "gw:/users/".
+func (s *Server) serveStoreAt(w http.ResponseWriter, r *http.Request, body []byte, urlPrefix, keyPrefix string) bool {
+	rel := keyPrefix + strings.TrimPrefix(r.URL.Path, urlPrefix)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if objs, ok := s.store[rel]; ok {

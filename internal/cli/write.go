@@ -86,9 +86,18 @@ func planRows(p *core.Plan) []map[string]any {
 	return rows
 }
 
+// runPlanQuiet is runPlan for a caller that prints the applied result itself.
+func runPlanQuiet(cmd *cobra.Command, ctx *config.Context, ctxName string, client *core.Client, p *core.Plan) (bool, error) {
+	return runPlanMode(cmd, ctx, ctxName, client, p, true)
+}
+
 // runPlan shows a plan (the default) or applies it (--apply, or mode: apply). It
-// returns the plan after the run so a caller can use the results.
+// reports whether it applied, so a caller can use the results.
 func runPlan(cmd *cobra.Command, ctx *config.Context, ctxName string, client *core.Client, p *core.Plan) (applied bool, err error) {
+	return runPlanMode(cmd, ctx, ctxName, client, p, false)
+}
+
+func runPlanMode(cmd *cobra.Command, ctx *config.Context, ctxName string, client *core.Client, p *core.Plan, quiet bool) (applied bool, err error) {
 	outFmt := output.Format(flagOutput)
 	if cmd.Flags().Changed("expect") && flagExpect != len(p.Steps) {
 		return false, &usageError{fmt.Sprintf("--expect %d, but this would change %d object(s): nothing was changed", flagExpect, len(p.Steps))}
@@ -123,8 +132,10 @@ func runPlan(cmd *cobra.Command, ctx *config.Context, ctxName string, client *co
 		recorder = rec
 	}
 	runErr := p.Apply(cmd.Context(), client, recorder)
-	if err := output.Print(outFmt, planColumns, planRows(p)); err != nil {
-		return true, err
+	if !quiet || runErr != nil {
+		if err := output.Print(outFmt, planColumns, planRows(p)); err != nil {
+			return true, err
+		}
 	}
 	if rec != nil && rec.Path() != "" {
 		fmt.Fprintln(os.Stderr, "record:", rec.Path())
@@ -658,11 +669,12 @@ func enableCmd(verb string, enabled bool) *cobra.Command {
 func attachCmd(verb string, detach bool) *cobra.Command {
 	c := &cobra.Command{
 		Use:   verb + " <kind> <name>... --to KIND=NAME",
-		Short: strings.ToUpper(verb[:1]) + verb[1:] + " objects: hosts and groups of a group, credentials of a job template, users of a team",
+		Short: strings.ToUpper(verb[:1]) + verb[1:] + " objects: hosts and groups of a group, credentials and notifications of a job template",
 		Long: "Possible pairs (parent <- what is attached): " + strings.Join(core.Relations(), ", ") + `.
 
   awxctl attach hosts web1 web2 --to groups=webservers --inventory lab
-  awxctl detach credentials deploy --to "job-templates=Patch"`,
+  awxctl detach credentials deploy --to "job-templates=Patch"
+  awxctl attach notification-templates "Ops chat" --to "job-templates=Patch" --on error`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			child, err := kindArg(args[0])
@@ -687,7 +699,16 @@ func attachCmd(verb string, detach bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := client.PlanAttach(cmd.Context(), parent, to[1], child, refs, scopeFlag(cmd, parent), detach)
+			var p *core.Plan
+			if child.Kind == "notification-templates" {
+				when, _ := cmd.Flags().GetString("on")
+				if len(refs) != 1 {
+					return &usageError{"attach or detach one notification template at a time"}
+				}
+				p, err = client.PlanNotify(cmd.Context(), parent, to[1], refs[0], when, scopeFlag(cmd, parent), detach)
+			} else {
+				p, err = client.PlanAttach(cmd.Context(), parent, to[1], child, refs, scopeFlag(cmd, parent), detach)
+			}
 			if err != nil {
 				return err
 			}
@@ -696,6 +717,7 @@ func attachCmd(verb string, detach bool) *cobra.Command {
 		},
 	}
 	c.Flags().String("to", "", "the parent, as KIND=NAME: --to groups=webservers")
+	c.Flags().String("on", "", "for notification-templates: started, success or error")
 	addBulkFlags(c)
 	return c
 }
@@ -805,8 +827,12 @@ func maskArgs(args []string) []string {
 			}
 			continue
 		}
-		if k, _, ok := strings.Cut(body, "="); ok && secretLooking(k) {
-			out[i] = prefix + k + "=******"
+		if k, v, ok := strings.Cut(body, "="); ok {
+			if secretLooking(k) {
+				out[i] = prefix + k + "=******"
+			} else if m, isMap := core.Mask(map[string]any{k: v}).(map[string]any); isMap {
+				out[i] = prefix + k + "=" + fmt.Sprint(m[k]) // variables={...}: masked inside
+			}
 		}
 	}
 	return out
