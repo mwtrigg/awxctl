@@ -391,7 +391,7 @@ whose path starts with the given text (for example --command "get jobs").`,
 			"version": version.Version,
 			"purpose": "CLI for the AWX / Ansible Automation Platform controller API",
 			"conventions": []string{
-				"Output is JSON by default: {\"data\": [rows], \"meta\": {count, limit, limit_reached}}. -o table|jsonl|csv change it; --field NAME prints one field per line.",
+				"Output is JSON by default: {\"data\": [rows], \"meta\": {count, total, limit, limit_reached}}; total is how many objects match on the server (for 'how many' use --limit 1 and read meta.total). -o table|jsonl|csv change it; --field NAME prints one field per line.",
 				"Errors go to stderr as {\"error\", \"kind\", \"code\"}; the exit code is the same code.",
 				"Reading: `awxctl get <kind>` lists (every kind takes --filter KEY=VALUE, --search, --limit, --order; named kinds take --name; job kinds take --since, --until, --failed); `awxctl get <kind> <name-or-id>` shows one object with every field.",
 				"A list stops at the limit (default 100): meta.limit_reached true means there are more; raise --limit or use --limit -1.",

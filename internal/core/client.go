@@ -251,7 +251,7 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 			*t = rawText(data)
 			return false, nil
 		}
-		if err := json.Unmarshal(data, out); err != nil {
+		if err := decodeJSON(data, out); err != nil {
 			return false, fmt.Errorf("%w: %s %s: the answer is not JSON (is the url right?)", ErrConnect, method, path)
 		}
 		return false, nil
@@ -270,6 +270,15 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 		return true, e
 	}
 	return false, e
+}
+
+// decodeJSON decodes an API answer keeping numbers exactly as sent. Task results
+// can hold integers far beyond what a float carries (a key's modulus), which the
+// default decoding rejects.
+func decodeJSON(data []byte, out any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(out)
 }
 
 // parseErrorBody reads the controller's error JSON: {"detail": "..."} or

@@ -171,7 +171,7 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		for i, o := range objs {
 			rows[i] = r.Row(o)
 		}
-		output.Limit = limit
+		output.Limit, output.Total = limit, total
 		if total > len(rows) {
 			output.Fetched = limit // there are more than were read
 		}

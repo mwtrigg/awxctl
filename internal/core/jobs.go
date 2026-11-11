@@ -87,6 +87,11 @@ func (c *Client) Output(ctx context.Context, j *Job, start int) (text string, ne
 		if err := c.get(ctx, c.apiPath+j.Path+q, &chunk); err != nil {
 			return "", 0, err
 		}
+		if next == start && strings.HasPrefix(chunk.Content, "Standard Output too large to display") {
+			// Above the controller's display limit (1 MB by default) the ranged
+			// form only answers with this notice: the whole text must be downloaded.
+			return c.outputDownload(ctx, j, start)
+		}
 		buf.WriteString(chunk.Content)
 		if chunk.Range.End <= next || chunk.Range.End >= chunk.Range.AbsoluteEnd {
 			if chunk.Range.End > next {
@@ -97,6 +102,24 @@ func (c *Client) Output(ctx context.Context, j *Job, start int) (text string, ne
 		next = chunk.Range.End
 	}
 	return StripANSI(buf.String()), next, nil
+}
+
+// outputDownload reads the whole output as one text and cuts it at the start line.
+func (c *Client) outputDownload(ctx context.Context, j *Job, start int) (string, int, error) {
+	text, err := c.GetText(ctx, j.Path+"stdout/?format=txt_download")
+	if err != nil {
+		return "", 0, err
+	}
+	text = strings.ReplaceAll(StripANSI(text), "\r\n", "\n")
+	lines := strings.SplitAfter(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	total := len(lines)
+	if start >= total {
+		return "", total, nil
+	}
+	return strings.Join(lines[start:], ""), total, nil
 }
 
 // LineFilter narrows output: lines matching Grep (with Context lines around each
@@ -223,7 +246,7 @@ var HostSummaryFields = []Field{
 	ff("unreachable", "UNREACHABLE", "dark"), f("skipped", "SKIPPED"), f("rescued", "RESCUED"), f("ignored", "IGNORED"),
 	ff("job_id", "JOB", "summary_fields.job.id"), ff("job_name", "JOB NAME", "summary_fields.job.name"),
 	ff("job_status", "JOB STATUS", "summary_fields.job.status"), ff("job_template", "TEMPLATE", "summary_fields.job.job_template_name"),
-	ff("job_seconds", "JOB S", "summary_fields.job.elapsed"), w("created"),
+	ff("job_seconds", "JOB S", "summary_fields.job.elapsed"), w("created"), wf("inventory", "summary_fields.host.inventory_name|inventory_name"),
 }
 
 // Diagnosis is the answer to "why did this run fail".

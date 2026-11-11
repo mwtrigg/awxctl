@@ -41,6 +41,10 @@ var Command string
 // has that many rows the output says so, since there may be more.
 var Limit int
 
+// Total is how many objects match on the server, when a list command knows it
+// (0 = not known). It can be more than the rows printed.
+var Total int
+
 // Fetched is the number of rows the API returned, when that is not the number of rows
 // printed (grouped output prints groups, not the rows that were limited). 0 = use the
 // printed rows.
@@ -183,6 +187,9 @@ func printJSON(_ []Column, rows []map[string]any) error {
 	meta := map[string]any{
 		"count":   len(rows),
 		"command": Command,
+	}
+	if Total > 0 {
+		meta["total"] = Total // matching objects on the server; count is the rows returned here
 	}
 	if Limit > 0 {
 		meta["limit"] = Limit

@@ -139,7 +139,7 @@ func (c *Client) Send(ctx context.Context, method, rel string, body any) (Object
 	}
 	var o Object
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &o) // some endpoints answer with a list or nothing
+		_ = decodeJSON(raw, &o) // some endpoints answer with a list or nothing
 	}
 	return o, nil
 }
@@ -220,6 +220,26 @@ func (c *Client) Resolve(ctx context.Context, r *Resource, ref string, extra url
 	return nil, amb
 }
 
+// ResolveAll is Resolve for reading about a name that several objects share: the
+// same host name in more than one inventory. It returns every exact match.
+func (c *Client) ResolveAll(ctx context.Context, r *Resource, ref string, extra url.Values) ([]Object, error) {
+	o, err := c.Resolve(ctx, r, ref, extra)
+	if err == nil {
+		return []Object{o}, nil
+	}
+	var amb *AmbiguousError
+	if !errors.As(err, &amb) {
+		return nil, err
+	}
+	q := url.Values{}
+	for k, v := range extra {
+		q[k] = v
+	}
+	q.Set(r.NameField, strings.TrimPrefix(ref, "name:"))
+	objs, _, err := c.List(ctx, r.Path, q, 50)
+	return objs, err
+}
+
 // ErrUsage marks a request that cannot be right whatever the server says.
 var ErrUsage = errors.New("usage")
 
@@ -249,6 +269,20 @@ func idOf(o Object) string { return fmt.Sprint(asInt(o["id"])) }
 
 // ID returns an object's numeric ID.
 func ID(o Object) int { return asInt(o["id"]) }
+
+// asFloat reads a number however it was decoded.
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
 
 func asInt(v any) int {
 	switch n := v.(type) {

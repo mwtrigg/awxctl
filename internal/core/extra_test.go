@@ -374,11 +374,80 @@ func TestHostOutputAndLatestJob(t *testing.T) {
 		}
 		fakeawx.JSON(w, 200, map[string]any{"count": 1, "results": []map[string]any{{"summary_fields": map[string]any{"job": map[string]any{"id": 30}}}}})
 	})
-	host := Object{"id": 5, "name": "web1"}
+	host := []Object{{"id": 5, "name": "web1"}}
 	if id, err := c.LatestHostJob(context.Background(), host, "Patch", false); err != nil || id != 30 {
 		t.Errorf("latest job: %d %v", id, err)
 	}
 	if _, err := c.LatestHostJob(context.Background(), host, "Nope", false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("no job of that template: %v", err)
+	}
+}
+
+func TestOutputTooLargeIsDownloaded(t *testing.T) {
+	// Above its display limit the controller answers a ranged request with a
+	// notice instead of the text; the whole output must then be downloaded.
+	c, srv := liveClient(t, "aap")
+	srv.Add("/unified_jobs/", map[string]any{"id": 12, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 12, "status": "successful"})
+	srv.Handle("/jobs/12/stdout/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") == "txt_download" {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("line one\r\n\x1b[0;32mline two\x1b[0m\r\nline three\r\n"))
+			return
+		}
+		fakeawx.JSON(w, 200, map[string]any{"range": map[string]any{"start": 0, "end": 2, "absolute_end": 2},
+			"content": "Standard Output too large to display (2097152 bytes), only download supported for sizes over 1048576 bytes.\n\n"})
+	})
+	j, err := c.FindJob(context.Background(), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, next, err := c.Output(context.Background(), j, 0)
+	if err != nil || text != "line one\nline two\nline three\n" || next != 3 {
+		t.Errorf("download: %q next %d %v", text, next, err)
+	}
+	if text, next, _ := c.Output(context.Background(), j, 2); text != "line three\n" || next != 3 {
+		t.Errorf("from line 2: %q next %d", text, next)
+	}
+}
+
+func TestHugeNumbersInAnswers(t *testing.T) {
+	// A task result can hold an integer of hundreds of digits (a key modulus).
+	c, srv := liveClient(t, "awx")
+	huge := strings.Repeat("9", 400)
+	srv.Handle("/jobs/5/job_events/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count": 1, "next": null, "results": [{"id": 7, "counter": 3, "event": "runner_on_ok", "host_name": "web1", "task": "t", "play": "p", "stdout": "ok: [web1]",
+			"event_data": {"res": {"modulus": ` + huge + `, "elapsed": 1.5}}}]}`))
+	})
+	evs, total, err := c.List(context.Background(), "/jobs/5/job_events/", nil, 0)
+	if err != nil || total != 1 || ID(evs[0]) != 7 {
+		t.Fatalf("an answer with a huge integer must decode: %v", err)
+	}
+	if got := mustJSON(Lookup(evs[0], "event_data.res.modulus")); got != huge {
+		t.Errorf("the number must come back exactly: %d digits", len(got))
+	}
+	if f, ok := asFloat(Lookup(evs[0], "event_data.res.elapsed")); !ok || f != 1.5 {
+		t.Errorf("ordinary numbers still read as numbers: %v %v", f, ok)
+	}
+	if text, tasks, err := c.HostOutput(context.Background(), 5, "web1", false); err != nil || tasks != 1 || !strings.Contains(text, "ok: [web1]") {
+		t.Errorf("host output: %q %v", text, err)
+	}
+}
+
+func TestResolveAll(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/hosts/", map[string]any{"id": 5, "name": "web1", "inventory": 1})
+	srv.Add("/hosts/", map[string]any{"id": 6, "name": "web1", "inventory": 2})
+	srv.Add("/hosts/", map[string]any{"id": 7, "name": "db1", "inventory": 1})
+	hosts := FindResource("hosts")
+	if all, err := c.ResolveAll(context.Background(), hosts, "web1", nil); err != nil || len(all) != 2 {
+		t.Errorf("both hosts named web1: %v %v", all, err)
+	}
+	if one, err := c.ResolveAll(context.Background(), hosts, "db1", nil); err != nil || len(one) != 1 {
+		t.Errorf("one host: %v %v", one, err)
+	}
+	if _, err := c.ResolveAll(context.Background(), hosts, "nope", nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want not found", err)
 	}
 }

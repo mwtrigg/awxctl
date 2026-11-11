@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -234,7 +235,8 @@ var hostJobsCmd = &cobra.Command{
 		if inv, _ := cmd.Flags().GetString("inventory"); inv != "" {
 			scope.Set("inventory__name", inv)
 		}
-		h, err := client.Resolve(cmd.Context(), hosts, args[0], scope)
+		// The same name can be a host in several inventories: their jobs are one list.
+		found, err := client.ResolveAll(cmd.Context(), hosts, args[0], scope)
 		if err != nil {
 			return err
 		}
@@ -253,21 +255,42 @@ var hostJobsCmd = &cobra.Command{
 			q.Set("created__gte", t)
 		}
 		limit := effectiveLimit(cmd, ctx.DefaultLimit)
-		sums, total, err := client.List(cmd.Context(), hosts.Path+strconv.Itoa(core.ID(h))+"/job_host_summaries/", q, limit)
-		if err != nil {
-			return err
-		}
 		res := &core.Resource{Fields: core.HostSummaryFields}
-		rows := make([]map[string]any, len(sums))
-		for i, s := range sums {
-			rows[i] = res.Row(s)
+		var rows []map[string]any
+		total := 0
+		for _, h := range found {
+			sums, n, err := client.List(cmd.Context(), hosts.Path+strconv.Itoa(core.ID(h))+"/job_host_summaries/", q, limit)
+			if err != nil {
+				return err
+			}
+			total += n
+			for _, s := range sums {
+				row := res.Row(s)
+				row["inventory"] = core.Lookup(h, "summary_fields.inventory.name")
+				rows = append(rows, row)
+			}
 		}
-		output.Limit = limit
+		if len(found) > 1 {
+			sort.SliceStable(rows, func(i, j int) bool {
+				return core.ID(core.Object{"id": rows[i]["job_id"]}) > core.ID(core.Object{"id": rows[j]["job_id"]})
+			})
+			if limit > 0 && len(rows) > limit {
+				rows = rows[:limit]
+			}
+			fmt.Fprintf(os.Stderr, "note: %d hosts in different inventories have this name: their jobs are listed together (see the inventory field; --inventory picks one)\n", len(found))
+		}
+		if rows == nil {
+			rows = []map[string]any{}
+		}
+		output.Limit, output.Total = limit, total
 		if total > len(rows) {
 			output.Fetched = limit
 		}
 		cols := []output.Column{{Key: "job_id", Header: "JOB"}, {Key: "job_name", Header: "NAME"}, {Key: "job_template", Header: "TEMPLATE"}, {Key: "job_status", Header: "JOB STATUS"}, {Key: "job_seconds", Header: "JOB S"}, {Key: "failed", Header: "HOST FAILED"},
 			{Key: "ok", Header: "OK"}, {Key: "changed", Header: "CHANGED"}, {Key: "failures", Header: "FAILURES"}, {Key: "unreachable", Header: "UNREACHABLE"}, {Key: "created", Header: "WHEN"}}
+		if len(found) > 1 {
+			cols = append(cols, output.Column{Key: "inventory", Header: "INVENTORY"})
+		}
 		return output.Print(output.Format(flagOutput), cols, rows)
 	},
 }

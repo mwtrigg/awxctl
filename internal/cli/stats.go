@@ -20,10 +20,15 @@ var statsCmd = group(&cobra.Command{Use: "stats", Short: "Figures over many runs
 var statsJobsCmd = &cobra.Command{
 	Use:   "jobs",
 	Short: "Runs, failure rate and runtimes (min, average, median, p95, max) per template, day, status, ...",
-	Long: `Reads the jobs of a time window (default: the last 30 days) and summarizes them
+	Long: `Reads the jobs of a time window (default: the last 7 days) and summarizes them
 per group. Runtimes are in seconds and count finished runs only.
 
-  awxctl stats jobs --since 30d                       # one row per template
+The controller has no summary of its own, so every job in the window is read:
+on a busy controller that is roughly 50 jobs a second. Narrow it with --template
+or a shorter --since when it is slow; --max-jobs (default 2000) bounds it, and a
+note says when the window held more.
+
+  awxctl stats jobs                                   # one row per template, last 7 days
   awxctl stats jobs --template "Patch servers" --by day
   awxctl stats jobs --since 7d --by launched_by
 
@@ -198,14 +203,21 @@ host failed in). --grep, --tail and --head narrow the text further.`,
 		if err != nil {
 			return err
 		}
-		h, err := client.Resolve(cmd.Context(), core.FindResource("hosts"), args[0], inventoryScope(cmd))
-		if err != nil {
-			return err
-		}
+		// A job's output is found by the host's name. Only "the newest job" needs the
+		// host itself, and a name shared by hosts of several inventories means the
+		// newest job of any of them.
+		name := strings.TrimPrefix(args[0], "name:")
 		id := jobFlag
-		if id == 0 {
-			if id, err = client.LatestHostJob(cmd.Context(), h, template, failed); err != nil {
+		if id == 0 || strings.HasPrefix(args[0], "id:") {
+			found, err := client.ResolveAll(cmd.Context(), core.FindResource("hosts"), args[0], inventoryScope(cmd))
+			if err != nil {
 				return err
+			}
+			name, _ = found[0]["name"].(string)
+			if id == 0 {
+				if id, err = client.LatestHostJob(cmd.Context(), found, template, failed); err != nil {
+					return err
+				}
 			}
 		}
 		j, err := client.FindJob(cmd.Context(), id)
@@ -215,7 +227,6 @@ host failed in). --grep, --tail and --head narrow the text further.`,
 		if j.Type != "job" {
 			return &usageError{fmt.Sprintf("job %d is a %s: per-host output exists for playbook jobs only", id, strings.ReplaceAll(j.Type, "_", " "))}
 		}
-		name, _ := h["name"].(string)
 		out, tasks, err := client.HostOutput(cmd.Context(), id, name, failed)
 		if err != nil {
 			return err
@@ -368,12 +379,12 @@ see that kind, not that the API changed.`,
 
 func init() {
 	statsJobsCmd.Flags().String("by", "template", "group by: template, day, status, inventory, launched_by, project, limit")
-	statsJobsCmd.Flags().String("since", "30d", "window start: 24h, 7d, 30d, a date or RFC 3339")
+	statsJobsCmd.Flags().String("since", "7d", "window start: 24h, 7d, 30d, a date or RFC 3339")
 	statsJobsCmd.Flags().String("until", "", "window end (same forms)")
 	statsJobsCmd.Flags().String("template", "", "only runs of this template")
 	statsJobsCmd.Flags().String("inventory", "", "only runs against this inventory")
 	statsJobsCmd.Flags().Bool("all-types", false, "every kind of run (workflows, syncs, system jobs), grouped by name")
-	statsJobsCmd.Flags().Int("max-jobs", 5000, "most runs to read (newest first)")
+	statsJobsCmd.Flags().Int("max-jobs", 2000, "most runs to read (newest first); a busy controller serves about 50 job rows a second")
 	statsHostsCmd.Flags().String("inventory", "", "the inventory (required)")
 	statsHostsCmd.Flags().String("since", "30d", "window start: 24h, 7d, 30d, a date or RFC 3339")
 	statsHostsCmd.Flags().Int("max-hosts", 200, "most hosts to count (one request per host)")

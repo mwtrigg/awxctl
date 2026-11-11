@@ -55,7 +55,7 @@ Settings: flags override AWXCTL_* environment variables, which override
 		}
 		output.Raw = flagRaw
 		output.Field = flagField
-		output.Limit, output.Fetched = 0, 0
+		output.Limit, output.Fetched, output.Total = 0, 0, 0
 		output.Command = strings.TrimPrefix(cmd.CommandPath(), "awxctl ")
 		if flagYes {
 			flagApply = true

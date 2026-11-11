@@ -420,3 +420,30 @@ func TestDoctorReportsWhatIsMissing(t *testing.T) {
 		t.Errorf("--with-preview adds exactly the preview POST: %+v", w)
 	}
 }
+
+func TestHostNameInSeveralInventories(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/hosts/", map[string]any{"id": 40, "name": "web1", "inventory": 9, "summary_fields": map[string]any{"inventory": map[string]any{"name": "other"}}})
+	sum := func(job int) map[string]any {
+		return map[string]any{"count": 1, "results": []map[string]any{{"host_name": "web1", "failed": false, "ok": 2, "summary_fields": map[string]any{"job": map[string]any{"id": job, "name": "j", "status": "successful", "elapsed": 3.5, "job_template_name": "Patch"}}}}}
+	}
+	srv.Handle("/hosts/3/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) { fakeawx.JSON(w, 200, sum(100)) })
+	srv.Handle("/hosts/40/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) { fakeawx.JSON(w, 200, sum(200)) })
+	out, errOut, code := runCLI(t, env, "get", "host-jobs", "web1", "-o", "jsonl")
+	if code != 0 || !strings.Contains(errOut, "2 hosts in different inventories") {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"job_id":200`) || !strings.Contains(lines[0], `"inventory":"other"`) || !strings.Contains(lines[1], `"inventory":"lab"`) || !strings.Contains(lines[0], `"job_seconds":3.5`) {
+		t.Errorf("both hosts' jobs, newest first, each with its inventory:\n%s", out)
+	}
+	// a write still refuses an ambiguous name
+	if _, _, code := runCLI(t, env, "disable", "hosts", "web1"); code != 5 {
+		t.Errorf("a change to an ambiguous name must be refused: exit %d", code)
+	}
+	// the envelope says how many match on the server
+	out, _, _ = runCLI(t, env, "get", "hosts", "--limit", "1")
+	if !strings.Contains(out, `"total": 3`) || !strings.Contains(out, `"count": 1`) {
+		t.Errorf("meta.total: %s", out)
+	}
+}

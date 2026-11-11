@@ -13,7 +13,7 @@ awxctl get jobs --failed --since 24h --group-by template
 awxctl get job-output 1234 --grep 'fatal|FAILED' --context 3
 awxctl get host-jobs web1 --failed
 awxctl get host-output web1 --template "Patch servers"   # only this host's part of the last run
-awxctl stats jobs --since 30d                    # runs, failure rate, runtimes per template
+awxctl stats jobs --since 7d                     # runs, failure rate, runtimes per template
 awxctl launch "Patch servers" --limit web1       # dry run: shows what would be sent
 awxctl launch "Patch servers" --limit web1 --apply --wait
 ```
@@ -138,7 +138,22 @@ About everything else:
 | `get access <kind> <name>` | who has which role on an object |
 
 Output is `{"data": [...], "meta": {...}}`; `-o table|jsonl|csv` change the format and
-`--field NAME` prints one field per line.
+`--field NAME` prints one field per line. In a list, `meta.total` is how many objects
+match on the server and `meta.count` how many rows came back, so "how many failed
+jobs this week" is `awxctl get jobs --failed --since 7d --limit 1` and reading
+`meta.total`.
+
+Things that are normal on a real controller and handled:
+
+- The same host name in several inventories: `get host-jobs` and `get host-output`
+  cover all of them (each row says which inventory); commands that change a host
+  ask for `--inventory`.
+- Job output above the controller's display limit (1 MB by default) is downloaded
+  whole and then narrowed locally, so `--tail` and `--grep` still work.
+- `get unified-jobs` includes every project and inventory sync, which can far
+  outnumber playbook jobs; `get jobs` is playbook jobs only.
+- Listing jobs is slow on a busy controller (about 50 rows a second): prefer
+  filters and small limits to `--limit -1`.
 
 ## Changing things
 

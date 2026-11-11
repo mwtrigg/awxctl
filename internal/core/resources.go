@@ -52,7 +52,7 @@ var jobFields = []Field{
 	f("id", "ID"), f("name", "NAME"), f("status", "STATUS"), f("launch_type", "LAUNCHED"),
 	ff("launched_by", "BY", "launched_by.name"),
 	f("started", "STARTED"), f("finished", "FINISHED"), f("elapsed", "SECONDS"),
-	w("failed"), w("created"), w("job_explanation"),
+	w("failed"), w("created"), w("job_explanation"), wf("launched_by_type", "launched_by.type"),
 }
 
 func withJob(extra ...Field) []Field { return append(append([]Field{}, jobFields...), extra...) }

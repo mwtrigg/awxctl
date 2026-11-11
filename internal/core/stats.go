@@ -92,7 +92,7 @@ func GroupRuns(rows []map[string]any, by string) []*RunStats {
 		default:
 			g.Running++
 		}
-		if e, ok := row["elapsed"].(float64); ok && Finished(status) && status != "canceled" {
+		if e, ok := asFloat(row["elapsed"]); ok && Finished(status) && status != "canceled" {
 			g.Durations = append(g.Durations, e)
 		}
 	}
@@ -141,7 +141,7 @@ func (c *Client) HostStats(ctx context.Context, inventory Object, since string, 
 			if name, _ := Lookup(s, "summary_fields.job.job_template_name").(string); name != "" {
 				templates[name] = true
 			}
-			if e, ok := Lookup(s, "summary_fields.job.elapsed").(float64); ok {
+			if e, ok := asFloat(Lookup(s, "summary_fields.job.elapsed")); ok {
 				seconds += e
 			}
 			if i == 0 {
@@ -158,7 +158,7 @@ func (c *Client) HostStats(ctx context.Context, inventory Object, since string, 
 
 // LatestHostJob finds the newest job that ran against a host, optionally only of
 // one job template.
-func (c *Client) LatestHostJob(ctx context.Context, host Object, template string, failedOnly bool) (int, error) {
+func (c *Client) LatestHostJob(ctx context.Context, hosts []Object, template string, failedOnly bool) (int, error) {
 	q := url.Values{"order_by": {"-id"}}
 	if template != "" {
 		q.Set("job__job_template__name", template)
@@ -166,11 +166,21 @@ func (c *Client) LatestHostJob(ctx context.Context, host Object, template string
 	if failedOnly {
 		q.Set("failed", "true")
 	}
-	sums, _, err := c.List(ctx, "/hosts/"+idOf(host)+"/job_host_summaries/", q, 1)
-	if err != nil {
-		return 0, err
+	newest := 0
+	var host Object
+	for _, h := range hosts { // the same name in several inventories: the newest job of any
+		host = h
+		sums, _, err := c.List(ctx, "/hosts/"+idOf(h)+"/job_host_summaries/", q, 1)
+		if err != nil {
+			return 0, err
+		}
+		if len(sums) > 0 {
+			if id := asInt(Lookup(sums[0], "summary_fields.job.id")); id > newest {
+				newest = id
+			}
+		}
 	}
-	if len(sums) == 0 {
+	if newest == 0 {
 		what := "no job"
 		if failedOnly {
 			what = "no job in which the host failed"
@@ -180,7 +190,7 @@ func (c *Client) LatestHostJob(ctx context.Context, host Object, template string
 		}
 		return 0, fmt.Errorf("%s has run against host %q: %w", what, host["name"], ErrNotFound)
 	}
-	return asInt(Lookup(sums[0], "summary_fields.job.id")), nil
+	return newest, nil
 }
 
 // HostOutput returns what one job printed for one host: each task the host took
