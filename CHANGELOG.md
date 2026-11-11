@@ -1,8 +1,13 @@
 # Changelog
 
+awxctl is `0.x`: the command line and JSON shapes can still change between releases. The release notes
+are taken from this file (`scripts/release-notes.sh`).
+
 ## [Unreleased]
 
-First working command set (no release yet).
+## [0.1.0] - 2026-11-11
+
+First release.
 
 - Connection: contexts, AWX / AAP gateway detection, `auth status`.
 - Reads: `get <kind>` for 31 kinds, job output, events, per-host results, host
