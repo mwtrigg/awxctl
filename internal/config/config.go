@@ -56,6 +56,10 @@ type Context struct {
 	// "apply" does it. The MCP server ignores this and always defaults to dry-run.
 	Mode string `yaml:"mode"`
 
+	// Output is the default output format of this context (json, jsonl, table or
+	// csv) when neither --output nor AWXCTL_OUTPUT is given. Empty means json.
+	Output string `yaml:"output"`
+
 	// StateKeep is how many before-state files to keep; older ones are deleted
 	// as new ones are written. nil means DefaultStateKeep; 0 means keep everything.
 	StateKeep *int `yaml:"state_keep"`

@@ -643,3 +643,27 @@ func TestDevBuildIsNewerThanItsRelease(t *testing.T) {
 		}
 	}
 }
+
+func TestOutputFromTheEnvironment(t *testing.T) {
+	out, _, code := runCLI(t, map[string]string{"AWXCTL_OUTPUT": "table"}, "version")
+	if code != 0 || strings.Contains(out, "{") || !strings.Contains(out, "VERSION") {
+		t.Errorf("AWXCTL_OUTPUT=table makes table the default: exit %d %q", code, out)
+	}
+	out, _, _ = runCLI(t, map[string]string{"AWXCTL_OUTPUT": "table"}, "version", "-o", "json")
+	if !strings.Contains(out, `"version"`) {
+		t.Errorf("the flag beats the environment: %q", out)
+	}
+	if _, errOut, code := runCLI(t, map[string]string{"AWXCTL_OUTPUT": "xml"}, "version"); code != 5 || !strings.Contains(errOut, "AWXCTL_OUTPUT") {
+		t.Errorf("an unknown format in the environment: exit %d %s", code, errOut)
+	}
+	_, errOut, code := runCLI(t, map[string]string{"AWXCTL_OUTPUT": "table"}, "get", "nope")
+	if code != 5 || strings.HasPrefix(strings.TrimSpace(errOut), "{") {
+		t.Errorf("errors follow the default format: exit %d %q", code, errOut)
+	}
+	// The MCP server asks for JSON explicitly, whatever the environment says.
+	tools := mcpTools(false, false)
+	argv, err := mcpArgv(tools[0], map[string]any{}, false)
+	if err != nil || !strings.Contains(strings.Join(argv, " "), "--output=json") {
+		t.Errorf("mcp argv: %v %v", argv, err)
+	}
+}

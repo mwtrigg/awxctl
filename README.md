@@ -81,6 +81,7 @@ contexts:
     # mode: dry-run                # dry-run (default) | apply
     # allowed_templates: ["Patch servers", "id:42"]   # what may be launched
     # default_limit: 100           # rows a list returns unless --limit says otherwise
+    # output: json                 # default output format: json | jsonl | table | csv
     # state_dir: ~/.local/state/awxctl   # audit records; state_keep: 200 newest
 ```
 
@@ -94,6 +95,7 @@ contexts:
 | `AWXCTL_FLAVOR` | `awx`, `aap` or `auto` |
 | `AWXCTL_PERMISSIONS` | the tier of a context that has no `permissions` line; on a context that has one it can lower the tier but never raise it |
 | `AWXCTL_MODE` | `dry-run` or `apply` |
+| `AWXCTL_OUTPUT` | default output format: `json`, `jsonl`, `table` or `csv` (a context can also set `output:`) |
 | `AWXCTL_STATE_DIR`, `AWXCTL_STATE_KEEP`, `AWXCTL_BEFORE_STATE` | audit records: where, how many, on/off |
 
 `awxctl auth status` shows what a context reaches; `awxctl context list` and
@@ -157,7 +159,11 @@ About everything else:
 | `get access <kind> <name>` | who has which role on an object |
 
 Output is `{"data": [...], "meta": {...}}`; `-o table|jsonl|csv` change the format and
-`--field NAME` prints one field per line. In a list, `meta.total` is how many objects
+`--field NAME` prints one field per line. The default format is JSON, for agents and scripts.
+For tables at your own terminal, set `AWXCTL_OUTPUT=table` in your shell profile (or `output:
+table` on a context); `-o` still wins, and the MCP server always asks for JSON. To keep agents
+that inherit your profile on JSON, set it only for interactive use, for example
+`[ -z "$CLAUDECODE" ] && export AWXCTL_OUTPUT=table`. In a list, `meta.total` is how many objects
 match on the server and `meta.count` how many rows came back, so "how many failed
 jobs this week" is `awxctl get jobs --failed --since 7d --limit 1` and reading
 `meta.total`.

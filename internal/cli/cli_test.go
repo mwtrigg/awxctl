@@ -18,7 +18,7 @@ import (
 func runCLI(t *testing.T, env map[string]string, args ...string) (string, string, int) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	for _, k := range []string{"AWXCTL_URL", "AWXCTL_API_TOKEN", "AWXCTL_CONTEXT", "AWXCTL_INSECURE", "AWXCTL_FLAVOR", "AWXCTL_PERMISSIONS", "AWXCTL_MODE", "AWXCTL_USERNAME", "AWXCTL_PASSWORD"} {
+	for _, k := range []string{"AWXCTL_OUTPUT", "AWXCTL_URL", "AWXCTL_API_TOKEN", "AWXCTL_CONTEXT", "AWXCTL_INSECURE", "AWXCTL_FLAVOR", "AWXCTL_PERMISSIONS", "AWXCTL_MODE", "AWXCTL_USERNAME", "AWXCTL_PASSWORD"} {
 		t.Setenv(k, "")
 	}
 	for k, v := range env {

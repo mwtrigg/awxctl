@@ -64,6 +64,13 @@ Settings: flags override AWXCTL_* environment variables, which override
 		output.Field = flagField
 		output.Limit, output.Fetched, output.Total, output.TotalKnown = 0, 0, 0, false
 		output.Command = strings.TrimPrefix(cmd.CommandPath(), "awxctl ")
+		if !cmd.Flags().Changed("output") {
+			def, err := defaultOutput()
+			if err != nil {
+				return err
+			}
+			flagOutput = def
+		}
 		if flagYes {
 			flagApply = true
 		}
@@ -133,7 +140,7 @@ func Execute() int {
 			return ce.code
 		}
 		code := classify(err)
-		output.PrintError(output.Format(flagOutput), err.Error(), code)
+		output.PrintError(errorFormat(), err.Error(), code)
 		return code
 	}
 	return output.ExitSuccess
@@ -180,7 +187,7 @@ var versionCmd = &cobra.Command{
 
 func init() {
 	pf := rootCmd.PersistentFlags()
-	pf.StringVarP(&flagOutput, "output", "o", string(output.DefaultFormat()), "output format: json|jsonl|table|csv")
+	pf.StringVarP(&flagOutput, "output", "o", string(output.DefaultFormat()), "output format: json|jsonl|table|csv (default: AWXCTL_OUTPUT, then the context's output setting, then json)")
 	pf.StringVarP(&flagContext, "context", "c", "", "override current context")
 	pf.StringVar(&flagField, "field", "", "print only this field of each result, one value per line")
 	pf.DurationVar(&flagTimeout, "timeout", 180*time.Second, "timeout of each API request")
@@ -196,4 +203,52 @@ func init() {
 func cliPrintErr(outFmt output.Format, msg string, code int) error {
 	output.PrintError(outFmt, msg, code)
 	return &cliErr{code: code}
+}
+
+// defaultOutput resolves the output format when --output was not given: the
+// AWXCTL_OUTPUT environment variable, then the active context's output setting,
+// then json. A person can set table for their own terminal; agents and scripts
+// that want JSON pass -o json or leave the variable unset.
+func defaultOutput() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("AWXCTL_OUTPUT")); v != "" {
+		if !validOutput(v) {
+			return "", &usageError{msg: "AWXCTL_OUTPUT: unknown output format " + v + ": use json, jsonl, table or csv"}
+		}
+		return v, nil
+	}
+	// The config is read leniently here: a broken or missing config is reported by
+	// the command itself, in whatever format is the default.
+	if cfg, err := config.LoadConfigFile(); err == nil {
+		if name, err := config.ActiveContextName(flagContext); err == nil && name != "" {
+			if v := strings.TrimSpace(cfg.Contexts[name].Output); v != "" {
+				if !validOutput(v) {
+					return "", &usageError{msg: "context " + name + ": unknown output format " + v + ": use json, jsonl, table or csv"}
+				}
+				return v, nil
+			}
+		}
+	}
+	return string(output.DefaultFormat()), nil
+}
+
+func validOutput(v string) bool {
+	switch output.Format(v) {
+	case output.FormatJSON, output.FormatJSONL, output.FormatTable, output.FormatCSV:
+		return true
+	}
+	return false
+}
+
+// errorFormat is the format an error is printed in when the command never got as
+// far as resolving the default (a bad flag, an unknown command).
+func errorFormat() output.Format {
+	if !rootCmd.PersistentFlags().Changed("output") {
+		if v := strings.TrimSpace(os.Getenv("AWXCTL_OUTPUT")); validOutput(v) {
+			return output.Format(v)
+		}
+	}
+	if validOutput(flagOutput) {
+		return output.Format(flagOutput)
+	}
+	return output.DefaultFormat()
 }

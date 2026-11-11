@@ -5,6 +5,12 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-11
+
+### Added
+- `AWXCTL_OUTPUT` and a per-context `output:` setting choose the default output format (json, jsonl, table,
+  csv). `--output` still wins; the MCP server always uses JSON.
+
 ## [0.2.0] - 2026-11-11
 
 ### Security
