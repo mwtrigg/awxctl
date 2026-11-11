@@ -29,7 +29,26 @@ var (
 	flagRaw      bool
 	flagTimeout  time.Duration
 	flagRetries  int
+	flagFields   string
+	flagTZ       string
 )
+
+// zone resolves --tz / AWXCTL_TZ: an IANA name, "local", or empty for UTC as the
+// API gives it.
+func zone() (*time.Location, error) {
+	name := strings.TrimSpace(flagTZ)
+	switch strings.ToLower(name) {
+	case "", "utc":
+		return nil, nil
+	case "local":
+		return time.Local, nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, &usageError{"--tz " + name + ": not a time zone name (use one like America/New_York, or local)"}
+	}
+	return loc, nil
+}
 
 var warnedHTTP bool
 
@@ -63,6 +82,17 @@ Settings: flags override AWXCTL_* environment variables, which override
 		output.Raw = flagRaw
 		output.Field = flagField
 		output.Limit, output.Fetched, output.Total, output.TotalKnown = 0, 0, 0, false
+		output.Fields = nil
+		for _, f := range strings.Split(flagFields, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				output.Fields = append(output.Fields, f)
+			}
+		}
+		loc, err := zone()
+		if err != nil {
+			return err
+		}
+		output.Zone = loc
 		output.Command = strings.TrimPrefix(cmd.CommandPath(), "awxctl ")
 		if !cmd.Flags().Changed("output") {
 			def, err := defaultOutput()
@@ -190,6 +220,8 @@ func init() {
 	pf.StringVarP(&flagOutput, "output", "o", string(output.DefaultFormat()), "output format: json|jsonl|table|csv (default: AWXCTL_OUTPUT, then the context's output setting, then json)")
 	pf.StringVarP(&flagContext, "context", "c", "", "override current context")
 	pf.StringVar(&flagField, "field", "", "print only this field of each result, one value per line")
+	pf.StringVar(&flagFields, "fields", "", "keep only these fields of each result, comma-separated, e.g. id,name,status (all formats)")
+	pf.StringVar(&flagTZ, "tz", os.Getenv("AWXCTL_TZ"), "show times in this zone: an IANA name like America/New_York, or local (default UTC; also the zone of --since/--until given without one)")
 	pf.DurationVar(&flagTimeout, "timeout", 180*time.Second, "timeout of each API request")
 	pf.IntVar(&flagRetries, "retries", 2, "retries of read-only calls after a connection error or 502/503/504 (writes are never retried)")
 	pf.BoolVar(&flagRaw, "raw", false, "include raw API values (*_raw, *_unix) next to the readable ones")

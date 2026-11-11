@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -26,6 +27,105 @@ const (
 	ExitPermission = 8 // the context's permission tier does not allow the command
 	ExitUnknown    = 7 // a write was sent but its outcome is not known (timeout, 502/504): check before retrying
 )
+
+// Fields, when set, keeps only these fields of each row, in this order, in every
+// format: an agent that needs four fields does not pay for forty.
+var Fields []string
+
+// Zone, when set, is the time zone timestamps are shown in (the API gives UTC).
+var Zone *time.Location
+
+// project cuts rows and columns down to Fields. A name no row has is an error
+// that lists what there is, unless there are no rows to judge by.
+func project(columns []Column, rows []map[string]any) ([]Column, []map[string]any, error) {
+	if len(rows) > 0 {
+		for _, f := range Fields {
+			known := false
+			for _, row := range rows {
+				if _, ok := row[f]; ok {
+					known = true
+					break
+				}
+			}
+			if !known {
+				keys := make([]string, 0, len(rows[0]))
+				for k := range rows[0] {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				return nil, nil, &FieldError{Msg: fmt.Sprintf("no such field %q (available: %s)", f, strings.Join(keys, ", "))}
+			}
+		}
+	}
+	header := map[string]string{}
+	for _, c := range columns {
+		header[c.Key] = c.Header
+	}
+	cols := make([]Column, len(Fields))
+	for i, f := range Fields {
+		h := header[f]
+		if h == "" {
+			h = strings.ToUpper(f)
+		}
+		cols[i] = Column{Key: f, Header: h}
+	}
+	out := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		m := make(map[string]any, len(Fields))
+		for _, f := range Fields {
+			m[f] = row[f]
+		}
+		out[i] = m
+	}
+	return cols, out, nil
+}
+
+// inZone returns the rows with every timestamp (a text in RFC 3339 form) moved to
+// the zone, at any depth. Other values are untouched.
+func inZone(rows []map[string]any, zone *time.Location) []map[string]any {
+	var conv func(v any) any
+	conv = func(v any) any {
+		switch t := v.(type) {
+		case string:
+			if len(t) >= 20 && len(t) <= 35 && t[4] == '-' && t[10] == 'T' {
+				if ts, err := time.Parse(time.RFC3339Nano, t); err == nil {
+					return ts.In(zone).Format("2006-01-02T15:04:05Z07:00")
+				}
+			}
+			return t
+		case map[string]any:
+			m := make(map[string]any, len(t))
+			for k, x := range t {
+				m[k] = conv(x)
+			}
+			return m
+		case []any:
+			l := make([]any, len(t))
+			for i, x := range t {
+				l[i] = conv(x)
+			}
+			return l
+		case []map[string]any:
+			l := make([]map[string]any, len(t))
+			for i, x := range t {
+				l[i] = conv(x).(map[string]any)
+			}
+			return l
+		case []string:
+			l := make([]string, len(t))
+			for i, x := range t {
+				l[i], _ = conv(x).(string)
+			}
+			return l
+		}
+		return v
+	}
+	out := make([]map[string]any, len(rows))
+	for i, r := range rows {
+		out[i] = conv(r).(map[string]any)
+	}
+	return out
+}
 
 // Raw includes the raw API values (*_raw, *_unix) next to the readable ones.
 var Raw bool
@@ -121,11 +221,20 @@ type Column struct {
 
 // Print writes rows to stdout in the requested format.
 func Print(format Format, columns []Column, rows []map[string]any) error {
+	if Zone != nil {
+		rows = inZone(rows, Zone)
+	}
 	if Field != "" {
 		return printField(rows)
 	}
 	rows = stripRaw(rows)
 	columns = visibleColumns(columns)
+	if len(Fields) > 0 {
+		var err error
+		if columns, rows, err = project(columns, rows); err != nil {
+			return err
+		}
+	}
 	if format != FormatJSON && limitReached(rows) {
 		fmt.Fprintf(os.Stderr, "note: showing %d rows, the limit; there may be more (raise --limit, or --limit -1 for all)\n", Limit)
 	}

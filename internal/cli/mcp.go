@@ -134,6 +134,15 @@ type mcpTool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 	path        []string       // command path, e.g. ["diagnose", "job"]
 	writes      bool
+	// kindParams, on the get tool, is which parameters each kind takes: the
+	// schema is the union of all kinds, so a call is checked against its own kind.
+	kindParams map[string]map[string]bool
+}
+
+// mcpCommonParams are the global flags every tool takes.
+func mcpCommonParams(p map[string]any) {
+	p["fields"] = map[string]any{"type": "string", "description": "keep only these fields of each result, comma-separated (e.g. id,name,status,started): ask for what you need, results are much smaller"}
+	p["tz"] = map[string]any{"type": "string", "description": "show times in this zone, e.g. America/New_York (default UTC)"}
 }
 
 func jsonType(pflagType string) map[string]any {
@@ -157,6 +166,8 @@ func mcpTools(allowWrites, allowApprovals bool) []mcpTool {
 	get := mcpTool{Name: "get", path: []string{"get"},
 		Description: "List objects of a kind, or show one by name or ID (give it as args[0]). Kinds: jobs, unified-jobs, workflow-jobs, job-templates, workflow-templates, inventories, hosts, groups, projects, schedules, credentials (no secrets), and more." + mcpNotice}
 	props := map[string]any{"args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "optional: one name or ID to show a single object with every field"}}
+	mcpCommonParams(props)
+	get.kindParams = map[string]map[string]bool{}
 	var kinds []string
 	for _, c := range manifest() {
 		if mcpCommandDenied("awxctl " + c.Command) {
@@ -176,6 +187,12 @@ func mcpTools(allowWrites, allowApprovals bool) []mcpTool {
 		if parts[0] == "get" && len(parts) == 2 && rootCmdKind(parts[1]) {
 			kinds = append(kinds, parts[1])
 			addFlags(props)
+			own := map[string]any{}
+			addFlags(own)
+			get.kindParams[parts[1]] = map[string]bool{}
+			for k := range own {
+				get.kindParams[parts[1]][k] = true
+			}
 			continue
 		}
 		if c.Writes && !allowWrites {
@@ -185,6 +202,7 @@ func mcpTools(allowWrites, allowApprovals bool) []mcpTool {
 			continue
 		}
 		p := map[string]any{"args": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "positional arguments: " + strings.TrimPrefix(c.Usage, "awxctl "+c.Command)}}
+		mcpCommonParams(p)
 		addFlags(p)
 		desc := c.Summary
 		if c.Help != "" {
@@ -202,11 +220,29 @@ func mcpTools(allowWrites, allowApprovals bool) []mcpTool {
 	}
 	sort.Strings(kinds)
 	props["kind"] = map[string]any{"type": "string", "enum": kinds, "description": "the kind of object"}
+	// Which filters go with which kind: the schema lists them all together.
+	var perKind []string
+	for _, k := range kinds {
+		var own []string
+		for p := range get.kindParams[k] {
+			if !mcpListParams[p] {
+				own = append(own, p)
+			}
+		}
+		if len(own) > 0 {
+			sort.Strings(own)
+			perKind = append(perKind, k+": "+strings.Join(own, ", "))
+		}
+	}
+	get.Description = "List objects of a kind, or show one by name or ID (give it as args[0]). A list leaves out large fields (variables, extra_vars, changes): use fields to pick exactly what you need. Every kind takes filter, search, limit, order, group_by, wide, fields, tz; named kinds take name. Other parameters depend on the kind (" + strings.Join(perKind, "; ") + ")." + mcpNotice
 	get.InputSchema = map[string]any{"type": "object", "properties": props, "required": []string{"kind"}}
 	tools = append(tools, get)
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	return tools
 }
+
+// mcpListParams are the parameters every kind's list takes.
+var mcpListParams = map[string]bool{"filter": true, "search": true, "limit": true, "order": true, "group_by": true, "wide": true, "name": true}
 
 // rootCmdKind reports whether name is one of the generated `get <kind>` commands.
 func rootCmdKind(name string) bool {
@@ -225,6 +261,19 @@ func mcpArgv(t mcpTool, in map[string]any, allowWrites bool) ([]string, error) {
 			return nil, fmt.Errorf("unknown kind %q", kind)
 		}
 		argv = append(argv, kind)
+		for k := range in {
+			if k == "kind" || k == "args" || k == "fields" || k == "tz" || t.kindParams[kind][k] {
+				continue
+			}
+			if _, known := props[k]; known { // a parameter of another kind
+				valid := make([]string, 0, len(t.kindParams[kind]))
+				for p := range t.kindParams[kind] {
+					valid = append(valid, p)
+				}
+				sort.Strings(valid)
+				return nil, fmt.Errorf("%s does not take %q; it takes: %s (plus fields, tz; any API filter goes in filter, e.g. [\"inventory__name=lab\"])", kind, k, strings.Join(valid, ", "))
+			}
+		}
 	}
 	var positional []string
 	names := make([]string, 0, len(in))

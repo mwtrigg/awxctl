@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/mwtrigg/awxctl/internal/core"
 	"github.com/mwtrigg/awxctl/internal/output"
@@ -26,6 +27,9 @@ var getCmd = group(&cobra.Command{
 --filter passes any API filter through (repeatable), for example
 --filter status=failed --filter name__icontains=patch.`,
 })
+
+// listing is true while a list (not a single object) is being printed.
+var listing bool
 
 var (
 	getFilters []string
@@ -47,6 +51,9 @@ func columns(r *core.Resource, wide bool) []output.Column {
 		if fd.Wide && !wide {
 			continue
 		}
+		if fd.Detail && !getWide && wide && r.Kind != "" && listing {
+			continue // a list in JSON: the large fields stay out unless --wide
+		}
 		cols = append(cols, output.Column{Key: fd.Key, Header: fd.Header})
 	}
 	return cols
@@ -64,8 +71,12 @@ func parseWhen(s string, now time.Time) (string, error) {
 			}
 		}
 	}
+	loc := time.UTC // a time written without a zone is in --tz when that is set, else UTC
+	if output.Zone != nil {
+		loc = output.Zone
+	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04", "2006-01-02"} {
-		if t, err := time.Parse(layout, s); err == nil {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
 			return t.UTC().Format(time.RFC3339), nil
 		}
 	}
@@ -179,6 +190,8 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		if err != nil {
 			return err
 		}
+		listing = true
+		defer func() { listing = false }()
 		if cmd.Flags().Changed("limit") && getLimit == 0 {
 			return &usageError{"--limit 0 is not a limit: use --limit 1 and read meta.total for a count, or --limit -1 for everything"}
 		}
@@ -189,7 +202,7 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		}
 		rows := make([]map[string]any, len(objs))
 		for i, o := range objs {
-			rows[i] = r.Row(o)
+			rows[i] = r.ListRow(o, getWide) // large fields (variables, changes) only with --wide
 		}
 		output.Limit, output.Total, output.TotalKnown = limit, total, true
 		if total > len(rows) {
@@ -255,7 +268,7 @@ func addListFlags(c *cobra.Command) {
 	c.Flags().StringVar(&getSearch, "search", "", "free-text search, as in the web UI")
 	c.Flags().IntVar(&getLimit, "limit", 0, "most rows to return (default: the context's default_limit, 100); -1 = all")
 	c.Flags().StringVar(&getOrder, "order", "", "sort field, prefix - for descending, e.g. -finished")
-	c.Flags().BoolVar(&getWide, "wide", false, "show every field in table output (JSON always has them)")
+	c.Flags().BoolVar(&getWide, "wide", false, "every field: more table columns, and the large fields (variables, extra_vars, changes) that a list leaves out; prefer --fields")
 }
 
 func init() {
@@ -268,6 +281,15 @@ func init() {
 			RunE:    runGet(r),
 		}
 		addListFlags(c)
+		c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+			var own []string
+			cmd.LocalFlags().VisitAll(func(fl *pflag.Flag) {
+				if fl.Name != "help" {
+					own = append(own, "--"+fl.Name)
+				}
+			})
+			return &usageError{fmt.Sprintf("%v: %s takes %s; any other API filter goes in --filter KEY=VALUE", err, cmd.CommandPath(), strings.Join(own, ", "))}
+		})
 		if r.TimeField != "" {
 			c.Flags().StringVar(&getSince, "since", "", "only those newer than this: 30m, 24h, 7d, a date or RFC 3339")
 			c.Flags().StringVar(&getUntil, "until", "", "only those older than this (same forms as --since)")

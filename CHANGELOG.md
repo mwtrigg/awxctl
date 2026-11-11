@@ -5,6 +5,28 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-11
+
+From the first real use by an agent (14 calls and 60k characters to diagnose one job).
+
+### Changed
+- Lists leave out the large fields (`variables`, `extra_vars`, `extra_data`, `changes`, `permissions`); `--wide`
+  adds them and a single object always has them. A list of 20 hosts went from about 80k characters to 6k.
+- `diagnose job`: the failed hosts are `hosts_failed` (was `hosts`); `stalled` has a `reason` (timeout, canceled,
+  play ended early) and the verdict no longer calls a play abort a hang.
+- `get activity` shows the object's type and name (`object`, `object_name`, `related`, `related_name`); the
+  `--object` filter is now `--object-type`, which takes several types.
+
+### Added
+- `--fields a,b,c` on every command: only those fields, in every format; also an MCP parameter on every tool.
+- `--tz` / `AWXCTL_TZ`: times in a zone, and `--since`/`--until` without a zone are read in it.
+- `diagnose job`: `errors`, the output lines that report an error outside a task ([ERROR], ERROR!, fatal) with
+  the lines that explain them; the tail leaves timing-only lines out.
+- `diagnose job --compare-last-success`.
+- `get activity --not-object-type`.
+- An unknown filter on `get <kind>` lists the filters that kind takes; over MCP a parameter of another kind is
+  refused with the valid list, and the `get` tool says which filters go with which kind.
+
 ## [0.2.1] - 2026-11-11
 
 ### Added

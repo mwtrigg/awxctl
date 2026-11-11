@@ -340,3 +340,161 @@ func TestWorkflowNodeSecretIsAlwaysSent(t *testing.T) {
 		t.Errorf("the plan must not show the secret: %s", shown)
 	}
 }
+
+// ---- after the first real-use feedback (2026-11-11) ----
+
+func TestListLeavesOutLargeFields(t *testing.T) {
+	hosts := FindResource("hosts")
+	o := Object{"id": 1, "name": "web1", "variables": `{"a": 1}`, "enabled": true}
+	if row := hosts.ListRow(o, false); row["variables"] != nil || row["name"] != "web1" {
+		t.Errorf("a list row has no variables: %v", row)
+	}
+	if _, ok := hosts.ListRow(o, true)["variables"]; !ok {
+		t.Error("--wide brings the variables back")
+	}
+	if _, ok := hosts.Row(o)["variables"]; !ok {
+		t.Error("a single object always has them")
+	}
+	for _, kind := range []string{"hosts", "groups", "inventories", "job-templates", "jobs", "activity", "schedules"} {
+		r := FindResource(kind)
+		big := map[string]bool{"variables": true, "extra_vars": true, "extra_data": true, "changes": true}
+		for _, fd := range r.Fields {
+			if big[fd.Key] && !fd.Detail {
+				t.Errorf("%s.%s is large and must be a detail field", kind, fd.Key)
+			}
+		}
+	}
+}
+
+func TestActivityRowsNameTheirObject(t *testing.T) {
+	act := FindResource("activity")
+	row := act.Row(Object{"id": 9, "timestamp": "2030-01-01T00:00:00Z", "operation": "update", "object1": "inventory", "object2": "host",
+		"changes":        map[string]any{"description": []any{"a", "b"}},
+		"summary_fields": map[string]any{"actor": map[string]any{"username": "ann"}, "inventory": []any{map[string]any{"id": 3, "name": "lab"}}, "host": []any{map[string]any{"id": 4, "name": "web1.example.com"}}}})
+	if row["object"] != "inventory" || row["object_name"] != "lab" || row["related_name"] != "web1.example.com" || row["actor"] != "ann" {
+		t.Errorf("activity row: %v", row)
+	}
+	if act.Filters["object-type"] != "object1__in" || act.Filters["not-object-type"] != "not__object1__in" {
+		t.Errorf("activity filters: %v", act.Filters)
+	}
+}
+
+func TestErrorLinesAndQuietTail(t *testing.T) {
+	text := strings.Join([]string{
+		"PLAY [Patch] *******",
+		"TASK [Gather] ******",
+		"Tuesday 10 November 2026  22:52:25 +0000 (0:00:00.009)       0:00:00.009 ******",
+		"ok: [web1.example.com]",
+		"",
+		"[ERROR]: Task failed: template error while templating string",
+		"Origin: /runner/project/playbooks/patch.yml:44:7",
+		"",
+		"42     - name: x",
+		"",
+		"PLAY RECAP *********",
+		"Tuesday 10 November 2026  22:52:26 +0000 (0:00:00.584)       0:00:00.730 ******",
+		"===============================================================================",
+		"Gather ------------------------------------------------------------------ 0.58s",
+		"Other task -------------------------------------------------------------- 0.02s",
+		"Playbook run took 0 days, 0 hours, 0 minutes, 1 seconds",
+		"",
+	}, "\n")
+	errs := errorLines(text, 20)
+	if len(errs) != 1 || errs[0]["line"] != 6 || !strings.Contains(errs[0]["text"].(string), "template error") || !strings.Contains(errs[0]["text"].(string), "patch.yml:44:7") {
+		t.Errorf("the error line with what follows it: %+v", errs)
+	}
+	tail := quietTail(text, 25)
+	for _, l := range tail {
+		if strings.Contains(l, "0.58s") || strings.Contains(l, "+0000 (") || strings.Contains(l, "====") || strings.Contains(l, "Playbook run took") {
+			t.Errorf("timing-only line in the tail: %q", l)
+		}
+	}
+	if len(tail) != 7 || tail[len(tail)-1] != "PLAY RECAP *********" {
+		t.Errorf("tail: %q", tail)
+	}
+}
+
+func TestDiagnoseSaysWhyHostsDidNotReturn(t *testing.T) {
+	// A play abort: the job failed without a failed task, and without a timeout.
+	c, srv := liveClient(t, "awx")
+	srv.Add("/unified_jobs/", map[string]any{"id": 70, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 70, "status": "failed"})
+	ev := func(n int, event, host string) map[string]any {
+		return map[string]any{"counter": n, "event": event, "host_name": host, "task": "Set facts", "parent_uuid": "t1", "created": "2030-01-01T00:00:07Z"}
+	}
+	srv.Handle("/jobs/70/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case q.Get("event__in") != "":
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+		case q.Get("order_by") == "-counter":
+			fakeawx.JSON(w, 200, map[string]any{"count": 1, "results": []map[string]any{ev(3, "runner_on_ok", "a")}})
+		default:
+			fakeawx.JSON(w, 200, map[string]any{"count": 3, "results": []map[string]any{ev(1, "runner_on_start", "a"), ev(2, "runner_on_start", "b"), ev(3, "runner_on_ok", "a")}})
+		}
+	})
+	srv.Handle("/jobs/70/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+	})
+	srv.Handle("/jobs/70/stdout/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"range": map[string]any{"start": 0, "end": 3, "absolute_end": 3}, "content": "TASK [Set facts] ***\n[ERROR]: Task failed: undefined variable\nOrigin: /runner/project/x.yml:3:5\n"})
+	})
+	d, err := c.Diagnose(context.Background(), 70)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Stalled == nil || d.Stalled["reason"] != "play ended early" || len(d.Errors) != 1 {
+		t.Fatalf("stalled %+v errors %+v", d.Stalled, d.Errors)
+	}
+	for _, want := range []string{"the play ended during task \"Set facts\" before 1 of 2 host(s) returned", "not a timeout", "1 error line(s), first: [ERROR]: Task failed: undefined variable"} {
+		if !strings.Contains(d.Verdict, want) {
+			t.Errorf("verdict lacks %q: %s", want, d.Verdict)
+		}
+	}
+	out, _ := json.Marshal(d)
+	if !strings.Contains(string(out), `"hosts_failed":[]`) || strings.Contains(string(out), `"hosts":`) {
+		t.Errorf("failed hosts are named hosts_failed: %s", out)
+	}
+}
+
+func TestCompareLastSuccess(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	run := func(id int, status, rev, limit, vars string, elapsed float64) map[string]any {
+		return map[string]any{"id": id, "name": "Patch", "status": status, "job_template": 7, "scm_revision": rev, "limit": limit, "playbook": "patch.yml",
+			"extra_vars": vars, "elapsed": elapsed, "finished": "2030-01-01T00:00:00Z",
+			"summary_fields": map[string]any{"inventory": map[string]any{"name": "lab"}, "execution_environment": map[string]any{"name": "ee-1"}}}
+	}
+	srv.Add("/unified_jobs/", map[string]any{"id": 30, "type": "job"})
+	good := run(20, "successful", "aaa111", "web", `{"release": "1.0", "db_password": "old"}`, 60)
+	srv.Handle("/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("job_template") != "7" || q.Get("status") != "successful" || q.Get("id__lt") != "30" || q.Get("order_by") != "-id" {
+			t.Errorf("the last good run must be asked for precisely: %s", r.URL.RawQuery)
+		}
+		fakeawx.JSON(w, 200, map[string]any{"count": 1, "results": []map[string]any{good}})
+	})
+	srv.Handle("/jobs/30/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, run(30, "failed", "bbb222", "web", `{"release": "1.1", "db_password": "new"}`, 7))
+	})
+	for id, n := range map[string]int{"30": 2, "20": 23} {
+		n := n
+		srv.Handle("/jobs/"+id+"/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) {
+			fakeawx.JSON(w, 200, map[string]any{"count": n, "results": []any{}})
+		})
+	}
+	d := &Diagnosis{Verdict: "failed"}
+	if err := c.CompareLastSuccess(context.Background(), d, 30); err != nil {
+		t.Fatal(err)
+	}
+	diff := d.Compare["differences"].(map[string]any)
+	out, _ := json.Marshal(d.Compare)
+	if diff["scm_revision"] == nil || diff["hosts"] == nil || diff["extra_vars"] == nil || diff["limit"] != nil || diff["inventory"] != nil {
+		t.Errorf("differences: %s", out)
+	}
+	if strings.Contains(string(out), `"old"`) || strings.Contains(string(out), `"new"`) || !strings.Contains(string(out), `"names_that_differ":["db_password","release"]`) {
+		t.Errorf("extra variables are compared by name, their values never shown: %s", out)
+	}
+	if !strings.Contains(d.Verdict, "differs from the last successful run (job 20) in: extra_vars, hosts, scm_revision") {
+		t.Errorf("verdict: %s", d.Verdict)
+	}
+}

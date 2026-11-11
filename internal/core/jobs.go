@@ -258,12 +258,17 @@ type Diagnosis struct {
 	// failure: hosts that failed the same task with the same message share an
 	// entry, which lists them.
 	Failures []map[string]any `json:"failures"`
-	Hosts    []map[string]any `json:"hosts"` // per-host counts of the hosts that failed
-	Nodes    []map[string]any `json:"nodes"` // workflow jobs: the nodes that did not succeed
+	Hosts    []map[string]any `json:"hosts_failed"` // per-host counts of the hosts that failed
+	Nodes    []map[string]any `json:"nodes"`        // workflow jobs: the nodes that did not succeed
 	// Stalled is set for a job that was cut off (timeout, cancel) or ended without
 	// a failed task: the last task that ran and the hosts that never returned from it.
 	Stalled map[string]any `json:"stalled,omitempty"`
-	Tail    []string       `json:"tail,omitempty"` // last output lines, when there is no better evidence
+	// Errors are the output lines that report an error outside a task result (a
+	// play abort, a templating or syntax error), each with the lines that follow it.
+	Errors []map[string]any `json:"errors,omitempty"`
+	Tail   []string         `json:"tail,omitempty"` // last output lines, without timing-only lines, when there is no better evidence
+	// Compare is set by CompareLastSuccess: what differs from the last good run.
+	Compare map[string]any `json:"compare,omitempty"`
 
 	failedHosts int // distinct hosts among the failure events
 }
@@ -501,15 +506,24 @@ func (c *Client) Diagnose(ctx context.Context, id int) (*Diagnosis, error) {
 		}
 		if st != nil {
 			if missing, _ := st["hosts_not_returned"].([]string); len(missing) > 0 || cutOff {
+				// Why the hosts did not return: the job was cut off, or the play
+				// simply ended there (an abort, an error outside a task).
+				switch {
+				case j.Status() == "canceled":
+					st["reason"] = "canceled"
+				case cutOff:
+					st["reason"] = "timeout"
+				default:
+					st["reason"] = "play ended early"
+				}
 				d.Stalled = st
 			}
 		}
 	}
 	if len(d.Failures) == 0 && len(d.Nodes) == 0 && j.Type != "workflow_job" && Finished(j.Status()) && j.Status() != "successful" {
 		if text, _, err := c.Output(ctx, j, 0); err == nil {
-			for _, l := range (LineFilter{Tail: 25}).Apply(text) {
-				d.Tail = append(d.Tail, l.Text)
-			}
+			d.Errors = errorLines(text, 20)
+			d.Tail = quietTail(text, 25)
 		}
 	}
 	d.Verdict = verdict(j, d)
@@ -521,17 +535,27 @@ func verdict(j *Job, d *Diagnosis) string {
 	expl, _ := j.Obj["job_explanation"].(string)
 	stuck := ""
 	if d.Stalled != nil {
-		stuck = fmt.Sprintf("; the last task result is from %v in task %q", d.Stalled["last_result_at"], d.Stalled["last_task"])
-		if missing, _ := d.Stalled["hosts_not_returned"].([]string); len(missing) > 0 {
-			shown := missing
-			if len(shown) > 10 {
-				shown = shown[:10]
-			}
-			stuck += fmt.Sprintf("; %d host(s) started it and never returned: %s", len(missing), strings.Join(shown, ", "))
-			if len(missing) > len(shown) {
-				stuck += ", ..."
+		missing, _ := d.Stalled["hosts_not_returned"].([]string)
+		shown := missing
+		if len(shown) > 10 {
+			shown = shown[:10]
+		}
+		list := strings.Join(shown, ", ")
+		if len(missing) > len(shown) {
+			list += ", ..."
+		}
+		if d.Stalled["reason"] == "play ended early" {
+			// Not a hang: the play stopped while hosts were still in the task.
+			stuck = fmt.Sprintf("; the play ended during task %q before %d of %v host(s) returned (not a timeout: a play abort or an error outside a task)", d.Stalled["last_task"], len(missing), d.Stalled["hosts_started"])
+		} else {
+			stuck = fmt.Sprintf("; the last task result is from %v in task %q", d.Stalled["last_result_at"], d.Stalled["last_task"])
+			if len(missing) > 0 {
+				stuck += fmt.Sprintf("; %d host(s) started it and never returned: %s", len(missing), list)
 			}
 		}
+	}
+	if len(d.Errors) > 0 {
+		stuck += fmt.Sprintf("; the output has %d error line(s), first: %v", len(d.Errors), clip(fmt.Sprint(d.Errors[0]["text"]), 300))
 	}
 	why := ""
 	if expl != "" {
@@ -569,6 +593,9 @@ func verdict(j *Job, d *Diagnosis) string {
 	case j.Obj["result_traceback"] != nil && j.Obj["result_traceback"] != "":
 		return st + ": the run crashed before any task ran, see job.result_traceback"
 	}
+	if len(d.Errors) > 0 || d.Stalled != nil {
+		return st + ": no failed task was recorded" + stuck
+	}
 	return st + ": no failed task was recorded, see tail (the last output lines)"
 }
 
@@ -577,6 +604,147 @@ func ifText(prefix, s string) string {
 		return ""
 	}
 	return prefix + s
+}
+
+var (
+	errorLineRE = regexp.MustCompile(`\[ERROR\]|ERROR!|^fatal: |FAILED! =>|UNREACHABLE! =>|^ERROR:`)
+	// profile_tasks and timer callbacks: a timestamp line per task and a table of
+	// task timings at the end. They say when, not what went wrong.
+	timingLineRE = regexp.MustCompile(`^(\w+ \d{1,2} \w+ \d{4} +\d{2}:\d{2}:\d{2} [+-]\d{4} \(.*\) +[\d:.]+ \*+|.* -{3,} +\d+\.\d+s|={5,}|Playbook run took .*)$`)
+)
+
+// errorLines finds the lines of an output that report an error, each with the
+// lines that follow it up to the next blank line (where Ansible says where and why).
+func errorLines(text string, max int) []map[string]any {
+	lines := strings.Split(text, "\n")
+	var out []map[string]any
+	for i := 0; i < len(lines) && len(out) < max; i++ {
+		if !errorLineRE.MatchString(lines[i]) {
+			continue
+		}
+		block := []string{strings.TrimRight(lines[i], "\r ")}
+		j := i + 1
+		for ; j < len(lines) && j < i+8 && strings.TrimSpace(lines[j]) != "" && !errorLineRE.MatchString(lines[j]); j++ {
+			block = append(block, strings.TrimRight(lines[j], "\r "))
+		}
+		out = append(out, map[string]any{"line": i + 1, "text": clip(strings.Join(block, "\n"), 1500)})
+		i = j - 1
+	}
+	return out
+}
+
+// quietTail returns the last n lines that say something: timing-only lines and
+// blank lines are left out.
+func quietTail(text string, n int) []string {
+	var kept []string
+	for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		l = strings.TrimRight(l, "\r ")
+		if strings.TrimSpace(l) == "" || timingLineRE.MatchString(l) {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if len(kept) > n {
+		kept = kept[len(kept)-n:]
+	}
+	return kept
+}
+
+// compareFields are what "what changed since it last worked" looks at.
+var compareFields = []string{"scm_revision", "scm_branch", "playbook", "limit", "job_type", "job_tags", "skip_tags", "forks", "verbosity", "launch_type", "diff_mode"}
+
+// CompareLastSuccess finds the newest successful run of the same template before
+// this job and reports what differs: revision, limit, inventory, execution
+// environment, extra variables (by name), host counts and runtime.
+func (c *Client) CompareLastSuccess(ctx context.Context, d *Diagnosis, id int) error {
+	j, err := c.FindJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	tmplField := map[string]string{"job": "job_template", "workflow_job": "workflow_job_template"}[j.Type]
+	tmpl := asInt(j.Obj[tmplField])
+	if tmplField == "" || tmpl == 0 {
+		d.Compare = map[string]any{"found": false, "note": "only a job or workflow job that still has its template can be compared"}
+		return nil
+	}
+	base := jobPaths[j.Type]
+	prev, _, err := c.List(ctx, base, url.Values{tmplField: {strconv.Itoa(tmpl)}, "status": {"successful"}, "id__lt": {strconv.Itoa(id)}, "order_by": {"-id"}}, 1)
+	if err != nil {
+		return err
+	}
+	if len(prev) == 0 {
+		d.Compare = map[string]any{"found": false, "note": "no earlier successful run of this template is on record"}
+		return nil
+	}
+	p := prev[0]
+	diff, unchanged := map[string]any{}, []string{}
+	put := func(name string, a, b any) {
+		if same(a, b) {
+			unchanged = append(unchanged, name)
+			return
+		}
+		diff[name] = map[string]any{"this": a, "last_success": b}
+	}
+	for _, f := range compareFields {
+		if _, ok := j.Obj[f]; ok {
+			put(f, j.Obj[f], p[f])
+		}
+	}
+	for name, path := range map[string]string{"inventory": "summary_fields.inventory.name", "project": "summary_fields.project.name",
+		"execution_environment": "summary_fields.execution_environment.name", "launched_by": "launched_by.name"} {
+		put(name, Lookup(j.Obj, path), Lookup(p, path))
+	}
+	// extra variables: which names differ, never the values
+	vars := func(o Object) map[string]any {
+		var m map[string]any
+		if s, _ := o["extra_vars"].(string); s != "" {
+			_ = decodeJSON([]byte(s), &m)
+		}
+		return m
+	}
+	a, b := vars(j.Obj), vars(p)
+	var changed []string
+	for k, v := range a {
+		if w, ok := b[k]; !ok || !same(v, w) {
+			changed = append(changed, k)
+		}
+	}
+	for k := range b {
+		if _, ok := a[k]; !ok {
+			changed = append(changed, k)
+		}
+	}
+	if len(changed) > 0 {
+		sort.Strings(changed)
+		diff["extra_vars"] = map[string]any{"names_that_differ": changed}
+	} else {
+		unchanged = append(unchanged, "extra_vars")
+	}
+	if j.Type == "job" {
+		count := func(jobID int) int {
+			_, n, err := c.List(ctx, base+strconv.Itoa(jobID)+"/job_host_summaries/", nil, 1)
+			if err != nil {
+				return -1
+			}
+			return n
+		}
+		put("hosts", count(id), count(ID(p)))
+	}
+	sort.Strings(unchanged)
+	d.Compare = map[string]any{"found": true, "differences": diff, "same": unchanged,
+		"last_success": map[string]any{"id": ID(p), "finished": p["finished"], "elapsed": p["elapsed"], "scm_revision": p["scm_revision"]},
+		"this":         map[string]any{"id": id, "elapsed": j.Obj["elapsed"], "status": j.Status()}}
+	names := make([]string, 0, len(diff))
+	for k := range diff {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		d.Verdict += fmt.Sprintf("; nothing in the job's settings differs from the last successful run (job %d)", ID(p))
+	} else {
+		d.Verdict += fmt.Sprintf("; differs from the last successful run (job %d) in: %s", ID(p), strings.Join(names, ", "))
+	}
+	return nil
 }
 
 // WorkflowNodeFields are the flat fields of a workflow job node.

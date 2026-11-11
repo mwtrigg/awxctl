@@ -122,6 +122,9 @@ field. Kinds: `jobs`, `unified-jobs` (every run of any type), `workflow-jobs`,
 | `--failed` | only failed runs |
 | `--limit N` | most rows (default 100; `-1` = all); `meta.limit_reached` says when there are more |
 | `--order FIELD` | sort, `-` prefix for descending |
+| `--fields a,b,c` | keep only these fields of each row (every command, every format) |
+| `--tz ZONE` | show times in a zone (`America/New_York`, `local`; default UTC); also the zone of a `--since` written without one. `AWXCTL_TZ` sets it |
+| `--wide` | add the large fields a list leaves out (`variables`, `extra_vars`, `changes`); one object always shows them |
 | `--group-by FIELD` | count rows per value instead of listing them |
 | per kind | e.g. `--template`, `--inventory`, `--status`, `--project`, `--organization` |
 
@@ -133,7 +136,7 @@ About jobs:
 
 | Command | Answers |
 |---|---|
-| `diagnose job <id>` | why it failed, best effort: verdict, each distinct failure with its role, task, file and hosts, the host that hung a timed-out job, workflow nodes |
+| `diagnose job <id>` | why it failed, best effort: verdict, each distinct failure with its role, task, file and hosts; where a job stopped and why (timeout, cancel, play ended early); error lines from the output; workflow nodes. `--compare-last-success` adds what differs from the last good run of the template (revision, limit, inventory, variables by name, host count, runtime) |
 | `get job-output <id>` | the output, narrowed with `--tail`, `--head`, `--grep`/`--context`, saved with `--save`, streamed with `--follow --text` |
 | `get job-events <id>` | task results: `--failed`, `--changed`, `--host`, `--task` |
 | `get job-hosts <id>` | per-host counts (ok, changed, failures, unreachable) |
@@ -157,6 +160,7 @@ About everything else:
 | `get survey <template>` | the survey, in the form `set survey` takes (`--save` to edit it) |
 | `get workflow-graph <workflow>` | nodes and links, in the form `set workflow-graph` takes |
 | `get access <kind> <name>` | who has which role on an object |
+| `get activity` | who changed what: time, actor, operation, object type and name. `--object-type inventory,host`, `--not-object-type job` (job launches fill it otherwise), `--group-by object\|operation\|actor` |
 
 Output is `{"data": [...], "meta": {...}}`; `-o table|jsonl|csv` change the format and
 `--field NAME` prints one field per line. The default format is JSON, for agents and scripts.

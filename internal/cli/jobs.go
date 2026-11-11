@@ -419,11 +419,17 @@ var diagnoseJobCmd = &cobra.Command{
   - the failed and unreachable task results, one entry per distinct failure with
     the play, role, task, file and line, message and the hosts it hit: hosts that
     failed the same task the same way share one entry;
-  - the hosts that failed, with their counts;
-  - for a job that timed out or was canceled: the last task that ran, when its
-    last result arrived, and the hosts that started it and never returned;
+  - hosts_failed: the hosts that failed, with their counts;
+  - stalled: for a job that stopped without a failed task, the last task that
+    ran and the hosts that started it and did not return, with the reason
+    (timeout, canceled, or "play ended early": an abort or an error outside a task);
+  - errors: the output lines that report such an error ([ERROR], ERROR!, fatal),
+    each with the lines that explain it;
   - for a workflow: the nodes that did not succeed, with their job IDs;
-  - the last output lines when nothing better is recorded.
+  - the last output lines (timing-only lines left out) when nothing better is recorded;
+  - with --compare-last-success: what differs from the newest successful run of
+    the same template (revision, limit, inventory, execution environment, which
+    extra variables, host count) and both runtimes.
 
 This is best effort: it reports what the controller recorded. A task that hides
 its result (no_log) or only says "failed, see above" tells diagnose no more than
@@ -442,9 +448,20 @@ it tells you; then read the output (awxctl get job-output, get host-output).`,
 		if err != nil {
 			return err
 		}
-		row := map[string]any{"verdict": d.Verdict, "job": d.Job, "failures": d.Failures, "hosts": d.Hosts, "nodes": d.Nodes}
+		if compare, _ := cmd.Flags().GetBool("compare-last-success"); compare {
+			if err := client.CompareLastSuccess(cmd.Context(), d, id); err != nil {
+				return err
+			}
+		}
+		row := map[string]any{"verdict": d.Verdict, "job": d.Job, "failures": d.Failures, "hosts_failed": d.Hosts, "nodes": d.Nodes}
 		if d.Stalled != nil {
 			row["stalled"] = d.Stalled
+		}
+		if len(d.Errors) > 0 {
+			row["errors"] = d.Errors
+		}
+		if d.Compare != nil {
+			row["compare"] = d.Compare
 		}
 		if len(d.Tail) > 0 {
 			row["tail"] = d.Tail
@@ -458,7 +475,15 @@ it tells you; then read the output (awxctl get job-output, get host-output).`,
 			fmt.Printf("  FAILED  %v host(s): %v\n          role=%v task=%q (%v)\n          %v\n", f["host_count"], strings.Join(f["hosts"].([]string), ", "), f["role"], f["task"], f["task_path"], output.Printable(fmt.Sprint(f["message"])))
 		}
 		if d.Stalled != nil {
-			fmt.Printf("  STALLED last task %q, last result at %v, never returned: %v\n", d.Stalled["last_task"], d.Stalled["last_result_at"], d.Stalled["hosts_not_returned"])
+			fmt.Printf("  STOPPED (%v) in task %q, last result at %v, hosts that did not return: %v\n", d.Stalled["reason"], d.Stalled["last_task"], d.Stalled["last_result_at"], d.Stalled["hosts_not_returned"])
+		}
+		for _, e := range d.Errors {
+			fmt.Printf("  ERROR   line %v: %s\n", e["line"], output.Printable(strings.ReplaceAll(fmt.Sprint(e["text"]), "\n", "\n          ")))
+		}
+		if diff, ok := d.Compare["differences"].(map[string]any); ok {
+			for k, v := range diff {
+				fmt.Printf("  DIFFERS %s: %v\n", k, v)
+			}
 		}
 		for _, n := range d.Nodes {
 			fmt.Printf("  NODE    %v  job=%v  status=%v\n", n["template"], n["job_id"], n["status"])
@@ -553,6 +578,7 @@ func init() {
 	workflowNodesCmd.Flags().String("template", "", "show the nodes of this workflow template instead of a workflow job")
 
 	getCmd.AddCommand(jobOutputCmd, jobEventsCmd, hostJobsCmd, jobHostsCmd, workflowNodesCmd, launchInfoCmd)
+	diagnoseJobCmd.Flags().Bool("compare-last-success", false, "also say what differs from the last successful run of the same template")
 	diagnoseCmd.AddCommand(diagnoseJobCmd)
 	rootCmd.AddCommand(diagnoseCmd, waitCmd)
 }

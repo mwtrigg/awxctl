@@ -12,7 +12,9 @@ type Field struct {
 	Key    string
 	Header string
 	From   string
-	Wide   bool
+	Wide   bool // Detail fields are large (a host's variables, an activity entry's changes).
+	// They are part of a single object's view and of a list only with --wide.
+	Detail bool
 }
 
 // Resource describes one kind of object: where it lives, how a row is built and
@@ -39,6 +41,8 @@ type Resource struct {
 	Scope string
 	// Secret marks objects whose values must never be shown (credentials).
 	Secret bool
+	// Post adds fields that are not a plain path in the API object.
+	Post func(o Object, row map[string]any)
 }
 
 func f(key, header string) Field        { return Field{Key: key, Header: header} }
@@ -46,6 +50,11 @@ func ff(key, header, from string) Field { return Field{Key: key, Header: header,
 func w(key string) Field                { return Field{Key: key, Header: strings.ToUpper(key), Wide: true} }
 func wf(key, from string) Field {
 	return Field{Key: key, Header: strings.ToUpper(key), From: from, Wide: true}
+}
+
+// d is a detail field: large, shown for one object and in a list only with --wide.
+func d(key string) Field {
+	return Field{Key: key, Header: strings.ToUpper(key), Wide: true, Detail: true}
 }
 
 var jobFields = []Field{
@@ -62,7 +71,7 @@ var resources = []*Resource{
 		Fields: withJob(
 			ff("template", "TEMPLATE", "summary_fields.job_template.name"),
 			ff("inventory", "INVENTORY", "summary_fields.inventory.name"),
-			f("limit", "LIMIT"), w("job_type"), w("playbook"), w("scm_revision"), w("job_tags"), w("skip_tags"), w("extra_vars"),
+			f("limit", "LIMIT"), w("job_type"), w("playbook"), w("scm_revision"), w("job_tags"), w("skip_tags"), d("extra_vars"),
 			wf("project", "summary_fields.project.name"),
 			wf("execution_environment", "summary_fields.execution_environment.name"),
 			wf("template_id", "job_template"), wf("inventory_id", "inventory"), w("execution_node"),
@@ -97,7 +106,7 @@ var resources = []*Resource{
 			wf("execution_environment", "summary_fields.execution_environment.name"),
 			w("ask_limit_on_launch"), w("ask_variables_on_launch"), w("ask_inventory_on_launch"), w("ask_tags_on_launch"),
 			w("ask_skip_tags_on_launch"), w("ask_job_type_on_launch"), w("ask_credential_on_launch"), w("ask_scm_branch_on_launch"),
-			w("allow_simultaneous"), w("become_enabled"), w("extra_vars")},
+			w("allow_simultaneous"), w("become_enabled"), d("extra_vars")},
 		Filters: map[string]string{"organization": "organization__name", "inventory": "inventory__name", "project": "project__name", "playbook": "playbook"},
 		Writable: []string{"name", "description", "job_type", "inventory", "project", "playbook", "organization", "limit", "job_tags", "skip_tags", "forks", "verbosity",
 			"extra_vars", "execution_environment", "become_enabled", "allow_simultaneous", "scm_branch", "timeout", "diff_mode",
@@ -107,7 +116,7 @@ var resources = []*Resource{
 	{Kind: "workflow-templates", Singular: "workflow template", Aliases: []string{"workflow-job-templates", "workflows"}, Path: "/workflow_job_templates/", NameField: "name", Order: "name",
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), ff("organization", "ORG", "summary_fields.organization.name"),
 			f("status", "LAST STATUS"), f("last_job_run", "LAST RUN"), f("next_job_run", "NEXT RUN"),
-			w("description"), w("survey_enabled"), w("last_job_failed"), w("limit"), w("extra_vars"), w("allow_simultaneous"),
+			w("description"), w("survey_enabled"), w("last_job_failed"), w("limit"), d("extra_vars"), w("allow_simultaneous"),
 			w("ask_limit_on_launch"), w("ask_variables_on_launch"), w("ask_inventory_on_launch"), wf("inventory", "summary_fields.inventory.name")},
 		Filters:  map[string]string{"organization": "organization__name"},
 		Writable: []string{"name", "description", "organization", "inventory", "limit", "extra_vars", "allow_simultaneous", "scm_branch", "ask_limit_on_launch", "ask_variables_on_launch", "ask_inventory_on_launch"},
@@ -116,7 +125,7 @@ var resources = []*Resource{
 	{Kind: "inventories", Singular: "inventory", Path: "/inventories/", NameField: "name", Order: "name",
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), ff("organization", "ORG", "summary_fields.organization.name"), f("kind", "KIND"),
 			f("total_hosts", "HOSTS"), f("hosts_with_active_failures", "FAILING"), f("total_groups", "GROUPS"),
-			f("has_inventory_sources", "SOURCES"), w("inventory_sources_with_failures"), w("description"), w("variables"), w("pending_deletion")},
+			f("has_inventory_sources", "SOURCES"), w("inventory_sources_with_failures"), w("description"), d("variables"), w("pending_deletion")},
 		Filters:  map[string]string{"organization": "organization__name", "kind": "kind"},
 		Writable: []string{"name", "description", "organization", "variables", "kind", "host_filter", "prevent_instance_group_fallback"},
 		Refs:     map[string]string{"organization": "organizations"}},
@@ -124,12 +133,12 @@ var resources = []*Resource{
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), f("enabled", "ENABLED"),
 			f("has_active_failures", "FAILING"), ff("last_job_id", "LAST JOB", "summary_fields.last_job.id"),
 			ff("last_job_status", "LAST STATUS", "summary_fields.last_job.status"), ff("last_job_finished", "LAST FINISHED", "summary_fields.last_job.finished"),
-			w("description"), w("variables"), wf("inventory_id", "inventory"), wf("groups", "summary_fields.groups.results"), w("instance_id")},
+			w("description"), d("variables"), wf("inventory_id", "inventory"), wf("groups", "summary_fields.groups.results"), w("instance_id")},
 		Filters:  map[string]string{"inventory": "inventory__name", "group": "groups__name", "enabled": "enabled"},
 		Writable: []string{"name", "description", "inventory", "enabled", "variables", "instance_id"},
 		Refs:     map[string]string{"inventory": "inventories"}},
 	{Kind: "groups", Singular: "group", Path: "/groups/", NameField: "name", Order: "name", Scope: "inventory",
-		Fields:   []Field{f("id", "ID"), f("name", "NAME"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), w("description"), w("variables"), wf("inventory_id", "inventory")},
+		Fields:   []Field{f("id", "ID"), f("name", "NAME"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), w("description"), d("variables"), wf("inventory_id", "inventory")},
 		Filters:  map[string]string{"inventory": "inventory__name", "host": "hosts__name"},
 		Writable: []string{"name", "description", "inventory", "variables"},
 		Refs:     map[string]string{"inventory": "inventories"}},
@@ -166,7 +175,7 @@ var resources = []*Resource{
 	{Kind: "schedules", Singular: "schedule", Path: "/schedules/", NameField: "name", Order: "name",
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("enabled", "ENABLED"), ff("template", "TEMPLATE", "summary_fields.unified_job_template.name"),
 			ff("type", "TYPE", "summary_fields.unified_job_template.unified_job_type"), f("next_run", "NEXT RUN"), f("rrule", "RRULE"),
-			w("timezone"), w("dtstart"), w("dtend"), w("description"), w("extra_data"), wf("template_id", "unified_job_template"), w("limit")},
+			w("timezone"), w("dtstart"), w("dtend"), w("description"), d("extra_data"), wf("template_id", "unified_job_template"), w("limit")},
 		Filters:  map[string]string{"template": "unified_job_template__name", "enabled": "enabled"},
 		Writable: []string{"name", "description", "unified_job_template", "rrule", "enabled", "extra_data", "limit", "job_tags", "skip_tags", "inventory"},
 		Refs:     map[string]string{"inventory": "inventories", "unified_job_template": "unified-job-templates"}},
@@ -188,7 +197,7 @@ var resources = []*Resource{
 			f("expires", "EXPIRES"), ff("application", "APPLICATION", "summary_fields.application.name"), f("created", "CREATED"), w("last_used"), wf("user_id", "user")},
 		Filters: map[string]string{"user": "user__username", "scope": "scope"}},
 	{Kind: "role-definitions", Singular: "role definition", Path: "/role_definitions/", NameField: "name", Order: "name",
-		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("content_type", "APPLIES TO"), f("managed", "MANAGED"), w("description"), w("permissions")}},
+		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("content_type", "APPLIES TO"), f("managed", "MANAGED"), w("description"), d("permissions")}},
 	{Kind: "role-user-assignments", Singular: "role user assignment", Path: "/role_user_assignments/", Order: "-id",
 		Fields: []Field{f("id", "ID"), ff("user", "USER", "summary_fields.user.username"), ff("role", "ROLE", "summary_fields.role_definition.name"),
 			f("content_type", "ON"), ff("object", "OBJECT", "summary_fields.content_object.name"), w("object_id"), w("created")},
@@ -208,8 +217,28 @@ var resources = []*Resource{
 		Refs:     map[string]string{"organization": "organizations"}},
 	{Kind: "activity", Singular: "activity entry", Aliases: []string{"activity-stream"}, Path: "/activity_stream/", Order: "-id", TimeField: "timestamp",
 		Fields: []Field{f("id", "ID"), f("timestamp", "TIME"), ff("actor", "ACTOR", "summary_fields.actor.username"), f("operation", "OPERATION"),
-			f("object1", "OBJECT"), f("object2", "RELATED"), w("changes"), w("object_association")},
-		Filters: map[string]string{"actor": "actor__username", "operation": "operation", "object": "object1"}},
+			ff("object", "OBJECT", "object1"), f("object_name", "NAME"), ff("related", "RELATED", "object2"), f("related_name", "RELATED NAME"),
+			d("changes"), w("object_association")},
+		// object-type takes one type or several (inventory,host,group); not-object-type
+		// leaves types out (job: the launches that otherwise fill the list).
+		Filters: map[string]string{"actor": "actor__username", "operation": "operation", "object-type": "object1__in", "not-object-type": "not__object1__in"},
+		Post: func(o Object, row map[string]any) {
+			nameOf := func(kind any) any {
+				k, _ := kind.(string)
+				if list, ok := Lookup(o, "summary_fields."+k).([]any); ok && len(list) > 0 {
+					if m, ok := list[0].(map[string]any); ok {
+						for _, key := range []string{"name", "username", "hostname"} {
+							if m[key] != nil && m[key] != "" {
+								return m[key]
+							}
+						}
+						return m["id"]
+					}
+				}
+				return nil
+			}
+			row["object_name"], row["related_name"] = nameOf(o["object1"]), nameOf(o["object2"])
+		}},
 	{Kind: "instances", Singular: "instance", Path: "/instances/", NameField: "hostname", Order: "hostname",
 		Fields: []Field{f("id", "ID"), f("hostname", "HOSTNAME"), f("node_type", "TYPE"), f("node_state", "STATE"), f("enabled", "ENABLED"),
 			f("capacity", "CAPACITY"), f("consumed_capacity", "USED"), f("jobs_running", "RUNNING"), f("version", "VERSION"), w("last_seen"), w("errors"), w("cpu"), w("memory")}},
@@ -291,6 +320,22 @@ func (r *Resource) Row(o Object) map[string]any {
 			v = maskText(text) // variables: secret-looking values hidden (get variables --show-secrets shows them)
 		}
 		row[fd.Key] = v
+	}
+	if r.Post != nil {
+		r.Post(o, row)
+	}
+	return row
+}
+
+// ListRow is Row for a list: without the detail fields unless wide.
+func (r *Resource) ListRow(o Object, wide bool) map[string]any {
+	row := r.Row(o)
+	if !wide {
+		for _, fd := range r.Fields {
+			if fd.Detail {
+				delete(row, fd.Key)
+			}
+		}
 	}
 	return row
 }

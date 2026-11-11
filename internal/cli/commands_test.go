@@ -667,3 +667,62 @@ func TestOutputFromTheEnvironment(t *testing.T) {
 		t.Errorf("mcp argv: %v %v", argv, err)
 	}
 }
+
+func TestFieldsAndTimeZone(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/hosts/", map[string]any{"id": 9, "name": "web9", "inventory": 2, "enabled": true, "variables": `{"big": "value"}`,
+		"summary_fields": map[string]any{"last_job": map[string]any{"id": 5, "finished": "2026-11-11T07:30:00.123456Z"}}})
+	out, errOut, code := runCLI(t, env, "get", "hosts", "--fields", "name,last_job_finished", "--tz", "America/New_York", "-o", "jsonl", "--filter", "name=web9")
+	if code != 0 || strings.TrimSpace(out) != `{"last_job_finished":"2026-11-11T02:30:00-05:00","name":"web9"}` {
+		t.Errorf("only the asked fields, times in the zone: exit %d %q %s", code, out, errOut)
+	}
+	out, _, _ = runCLI(t, env, "get", "hosts", "-o", "jsonl", "--filter", "name=web9")
+	if strings.Contains(out, "variables") || strings.Contains(out, "big") {
+		t.Errorf("a list leaves the variables out: %s", out)
+	}
+	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "-o", "jsonl")
+	if !strings.Contains(out, "variables") {
+		t.Errorf("one host shows its variables: %s", out)
+	}
+	if _, errOut, code := runCLI(t, env, "get", "hosts", "--fields", "name,nope"); code != 5 || !strings.Contains(errOut, "available:") {
+		t.Errorf("an unknown field lists the fields: exit %d %s", code, errOut)
+	}
+	if _, errOut, code := runCLI(t, env, "get", "hosts", "--tz", "Mars/Olympus"); code != 5 || !strings.Contains(errOut, "America/New_York") {
+		t.Errorf("an unknown zone: exit %d %s", code, errOut)
+	}
+	// a time written without a zone is read in --tz
+	runCLI(t, env, "get", "jobs", "--since", "2026-11-10 09:00", "--tz", "America/New_York")
+	last := srv.Requests()[len(srv.Requests())-1].Path
+	if !strings.Contains(last, "created__gte=2026-11-10T14%3A00%3A00Z") {
+		t.Errorf("09:00 Eastern is 14:00 UTC: %s", last)
+	}
+	// an unknown flag names what the kind takes
+	_, errOut, code = runCLI(t, env, "get", "unified-jobs", "--inventory", "lab")
+	if code != 5 || !strings.Contains(errOut, "--template") || !strings.Contains(errOut, "--filter KEY=VALUE") {
+		t.Errorf("an unknown filter lists the valid ones: exit %d %s", code, errOut)
+	}
+}
+
+func TestMCPGetChecksParametersPerKind(t *testing.T) {
+	var get mcpTool
+	for _, tl := range mcpTools(false, false) {
+		if tl.Name == "get" {
+			get = tl
+		}
+		props := tl.InputSchema["properties"].(map[string]any)
+		if props["fields"] == nil || props["tz"] == nil {
+			t.Errorf("tool %s lacks fields or tz", tl.Name)
+		}
+	}
+	_, err := mcpArgv(get, map[string]any{"kind": "unified-jobs", "inventory": "lab"}, false)
+	if err == nil || !strings.Contains(err.Error(), `unified-jobs does not take "inventory"`) || !strings.Contains(err.Error(), "template") {
+		t.Errorf("a parameter of another kind must be refused with the valid list: %v", err)
+	}
+	argv, err := mcpArgv(get, map[string]any{"kind": "jobs", "inventory": "lab", "fields": "id,status", "tz": "America/New_York"}, false)
+	if err != nil || strings.Join(argv, " ") != "get jobs --fields=id,status --inventory=lab --tz=America/New_York --output=json --" {
+		t.Errorf("argv: %v %v", argv, err)
+	}
+	if !strings.Contains(get.Description, "jobs: ") || !strings.Contains(get.Description, "fields") {
+		t.Errorf("the description says which filters go with which kind: %s", get.Description[:200])
+	}
+}
