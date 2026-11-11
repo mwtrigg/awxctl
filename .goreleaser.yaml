@@ -1,0 +1,70 @@
+# GoReleaser configuration: `goreleaser release --clean` on a pushed v* tag builds the
+# archives, checksums and SBOMs. Archive names carry the version
+# (awxctl_<version>_<os>_<arch>) because the signed checksums.txt must bind each
+# archive to its version; `awxctl upgrade` looks them up by that name. Change them
+# only together with internal/cli/upgrade_install.go.
+version: 2
+project_name: awxctl
+
+builds:
+  - id: awxctl
+    main: ./cmd/awxctl
+    binary: awxctl
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/mwtrigg/awxctl/internal/version.Version={{ .Version }}
+
+archives:
+  - id: awxctl
+    name_template: "awxctl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # The license and the third-party notices travel with every binary.
+    files:
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# checksums.txt is signed with an ed25519 SSH key: `awxctl upgrade` verifies
+# checksums.txt.sig against the public key compiled into the binary
+# (internal/cli/release_keys.go). The key file path comes from the environment;
+# the release workflow writes the AWXCTL_SIGNING_KEY secret there.
+signs:
+  - id: checksums
+    artifacts: checksum
+    cmd: ssh-keygen
+    args:
+      - -Y
+      - sign
+      - -f
+      - "{{ .Env.AWXCTL_SIGNING_KEY_FILE }}"
+      - -n
+      - awxctl-release
+      - "${artifact}"
+    signature: "${artifact}.sig"
+
+# A software bill of materials (SPDX) for each archive; needs syft on PATH.
+sboms:
+  - id: archive-sboms
+    artifacts: archive
+
+# GoReleaser's own notes are commit subjects, which can name internal things, so they are
+# disabled. (GoReleaser also ignores --release-notes when the changelog is disabled.) The
+# release workflow sets the release body from CHANGELOG.md after publishing, with
+# scripts/release-notes.sh and gh release edit.
+changelog:
+  disable: true
+
+release:
+  prerelease: auto

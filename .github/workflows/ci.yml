@@ -29,10 +29,14 @@ jobs:
               GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -o /dev/null ./cmd/awxctl
             done
           done
+      - name: The release notes can be produced
+        run: scripts/release-notes.sh v0.1.0 > /dev/null
       - name: go.mod and go.sum are tidy
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+      - name: THIRD_PARTY_NOTICES.md is up to date
+        run: go run scripts/notices/main.go | diff -u THIRD_PARTY_NOTICES.md -
 
   vulnerabilities:
     runs-on: ubuntu-latest

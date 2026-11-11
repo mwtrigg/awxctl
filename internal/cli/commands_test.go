@@ -176,7 +176,7 @@ func TestDryRunSendsNothing(t *testing.T) {
 			t.Errorf("no dry-run case for the changing command %q", name)
 		}
 	}
-	read := map[string]bool{"stats": true, "doctor": true, "auth": true, "get": true, "diagnose": true, "wait": true, "context": true, "state": true, "api": true, "llm": true, "mcp": true, "version": true, "help": true, "completion": true}
+	read := map[string]bool{"upgrade": true, "stats": true, "doctor": true, "auth": true, "get": true, "diagnose": true, "wait": true, "context": true, "state": true, "api": true, "llm": true, "mcp": true, "version": true, "help": true, "completion": true}
 	for _, c := range rootCmd.Commands() {
 		if !writeCommands[c.Name()] && !read[c.Name()] {
 			t.Errorf("command %q is neither in writeCommands nor known as read-only", c.Name())

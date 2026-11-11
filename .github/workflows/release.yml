@@ -1,0 +1,115 @@
+name: Release
+
+# Push a tag like v0.1.0-rc.1 or v0.1.0 to build and publish a release. The notes come from
+# CHANGELOG.md, never from commit subjects.
+#
+# Two jobs. `verify` has no secrets and no environment: it checks that the tag points at a
+# commit that is on main, then runs the vet, the tests and the notices check (the only place
+# repository code is executed). `release` needs it, runs in the `release` environment (which
+# holds the signing key and accepts only v* tags), and only compiles the code through
+# GoReleaser, so the signing key is never in the same job as the test code. The environment
+# does not require a reviewer (the owner chose not to), so the controls are the verify job,
+# the tag-on-main check and the tag ruleset.
+#
+# The release is signed: checksums.txt is signed with the AWXCTL_SIGNING_KEY
+# secret (an ed25519 SSH key) into checksums.txt.sig, which `awxctl upgrade`
+# verifies against the public key compiled into the binary. Once the repository
+# is public the archives and checksums also get build-provenance attestations,
+# checkable with `gh attestation verify`.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag must point at a commit that is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main: not releasing"; exit 1; }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"   # the newest 1.26.x patch (1.25 is out of support): releases and CI carry the stdlib fixes
+          check-latest: true   # the newest patch, not the one cached on the runner: a cached patch can lack a security fix
+      - name: Test before releasing
+        run: |
+          go vet ./...
+          go test ./...
+          go run scripts/notices/main.go | diff -u THIRD_PARTY_NOTICES.md -
+      - name: There are release notes for this tag
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > /dev/null
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    # The signing key lives in the `release` environment, which holds it and restricts it to
+    # v* tags. It does not require a reviewer: a v* tag on a commit that is on main is signed
+    # and published without anyone approving it (the verify job and the tag ruleset are the
+    # controls).
+    environment: release
+    permissions:
+      contents: write       # publish the release
+      id-token: write       # attestations
+      attestations: write   # attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false   # the token does not sit in .git/config next to the signing key
+      - name: The tag must point at a commit that is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main: not releasing"; exit 1; }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true   # the newest patch, not the one cached on the runner: a cached patch can lack a security fix
+      - name: Release notes from CHANGELOG.md
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          syft-version: v1.57.0
+      - name: Put the signing key in place
+        env:
+          AWXCTL_SIGNING_KEY: ${{ secrets.AWXCTL_SIGNING_KEY }}
+        run: |
+          if [ -z "$AWXCTL_SIGNING_KEY" ]; then echo "the AWXCTL_SIGNING_KEY secret is not set"; exit 1; fi
+          umask 077
+          printf '%s\n' "$AWXCTL_SIGNING_KEY" > "$RUNNER_TEMP/awxctl_signing_key"
+          echo "AWXCTL_SIGNING_KEY_FILE=$RUNNER_TEMP/awxctl_signing_key" >> "$GITHUB_ENV"
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: "v2.19.0"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Build the tag that was pushed. Without this GoReleaser takes the highest tag on the
+          # commit, which for v0.1.0 on the same commit as v0.1.0-rc.1 is the rc: it would
+          # rebuild 0.1.0-rc.1 under the final tag.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/awxctl_signing_key"
+      # GoReleaser's own notes are disabled (they would be commit subjects), and it ignores
+      # --release-notes when the changelog is disabled, so the body is set from CHANGELOG.md here.
+      - name: Set the release notes from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
+      - name: Attest build provenance (public repositories)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt

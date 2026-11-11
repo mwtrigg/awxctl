@@ -4,8 +4,8 @@ A command-line tool for the AWX and Ansible Automation Platform (AAP) controller
 built for agents and operators: one static binary, JSON by default, structured errors,
 and safe by default (nothing changes without `--apply`).
 
-**Status: pre-release.** The command set below works and is tested against AWX 24.6
-and AAP 2.7; there is no tagged release, installer or self-update yet.
+**Status: early.** The command set below works and is tested against AWX 24.6 and
+AAP 2.7. Releases are signed; the repository is private for now.
 
 ```
 awxctl diagnose job 1234                         # why did it fail, in one call
@@ -277,6 +277,28 @@ Errors are printed to stderr as `{"error": "...", "kind": "...", "code": N}`.
   token to another host), and only follows paging links on the same host.
 - Job extra variables are visible to anyone who can read the job in the controller;
   masking in awxctl's own output does not change that.
+
+## Releases and upgrade
+
+Releases are built by GitHub Actions from a `v*` tag. Every release has a `checksums.txt` and a
+signature of it, `checksums.txt.sig`, made with the project's release key
+([`docs/release-signing-key.pub`](docs/release-signing-key.pub), fingerprint
+`SHA256:JcxegRoINrLo8XEppZs2uirJPaVY20R2BN0jtugTZTY`). To check a download by hand:
+
+```sh
+echo "awxctl-release $(cat docs/release-signing-key.pub)" > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I awxctl-release -n awxctl-release -s checksums.txt.sig < checksums.txt
+sha256sum -c --ignore-missing checksums.txt
+```
+
+`awxctl upgrade` does the same before it replaces itself: it downloads the latest release, verifies
+the signature against the key compiled into the binary and the archive against the signed checksums,
+never installs an older version, starts the new binary once and puts the old one back if it does not
+run. `awxctl upgrade --check` only looks. While the repository is private, `upgrade` cannot reach the
+releases (it sends no credentials); download the archive yourself and check it as above.
+
+The license and the notices of the libraries awxctl is built with are in `LICENSE` and
+`THIRD_PARTY_NOTICES.md`, and travel in every release archive.
 
 ## Build
 

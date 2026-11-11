@@ -29,3 +29,5 @@ First working command set (no release yet).
   downloaded; a host name shared by several inventories works in the read
   commands; numbers in API answers are kept exact (very large integers in task
   results no longer break decoding).
+- Signed releases (checksums signed with the project's release key, SBOMs), `upgrade` with
+  verification, third-party notices in every archive.
