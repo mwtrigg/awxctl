@@ -169,18 +169,10 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 			}
 			row := r.Row(o)
 			cols := columns(r, true)
-			// Variables can run to pages and are rarely what was asked: they have
-			// their own command. --wide still shows them here.
-			if _, has := row["variables"]; has && !getWide {
-				delete(row, "variables")
-				kept := cols[:0]
-				for _, c := range cols {
-					if c.Key != "variables" {
-						kept = append(kept, c)
-					}
-				}
-				cols = kept
-				row["variables_hint"] = "left out: awxctl get variables " + r.Kind + " " + strconv.Quote(args[0]) + " (hosts: add --merged)"
+			// Variables are never part of this view, with or without --wide: they
+			// can run to pages and have their own command.
+			if core.HasVariables[r.Kind] {
+				row["variables_hint"] = "not shown here: awxctl get variables " + r.Kind + " " + strconv.Quote(args[0]) + " (hosts: add --merged)"
 			}
 			if r.Kind == "inventories" { // one inventory: say where its hosts come from
 				sources, err := client.InventorySources(cmd.Context(), o)
@@ -281,7 +273,7 @@ func addListFlags(c *cobra.Command) {
 	c.Flags().StringVar(&getSearch, "search", "", "free-text search, as in the web UI")
 	c.Flags().IntVar(&getLimit, "limit", 0, "most rows to return (default: the context's default_limit, 100); -1 = all")
 	c.Flags().StringVar(&getOrder, "order", "", "sort field, prefix - for descending, e.g. -finished")
-	c.Flags().BoolVar(&getWide, "wide", false, "every field: more table columns, and the large fields (variables, extra_vars, changes) that a list leaves out; prefer --fields")
+	c.Flags().BoolVar(&getWide, "wide", false, "every field: more table columns, and the large fields (extra_vars, changes) that a list leaves out; prefer --fields. Variables are never shown here: see get variables")
 }
 
 func init() {

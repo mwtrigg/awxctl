@@ -125,7 +125,7 @@ var resources = []*Resource{
 	{Kind: "inventories", Singular: "inventory", Path: "/inventories/", NameField: "name", Order: "name",
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), ff("organization", "ORG", "summary_fields.organization.name"), f("kind", "KIND"),
 			f("total_hosts", "HOSTS"), f("hosts_with_active_failures", "FAILING"), f("total_groups", "GROUPS"),
-			f("has_inventory_sources", "SOURCES"), w("inventory_sources_with_failures"), w("description"), d("variables"), w("pending_deletion")},
+			f("has_inventory_sources", "SOURCES"), w("inventory_sources_with_failures"), w("description"), w("pending_deletion")},
 		Filters:  map[string]string{"organization": "organization__name", "kind": "kind"},
 		Writable: []string{"name", "description", "organization", "variables", "kind", "host_filter", "prevent_instance_group_fallback"},
 		Refs:     map[string]string{"organization": "organizations"}},
@@ -133,12 +133,12 @@ var resources = []*Resource{
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), f("enabled", "ENABLED"),
 			f("has_active_failures", "FAILING"), ff("last_job_id", "LAST JOB", "summary_fields.last_job.id"),
 			ff("last_job_status", "LAST STATUS", "summary_fields.last_job.status"), ff("last_job_finished", "LAST FINISHED", "summary_fields.last_job.finished"),
-			w("description"), d("variables"), wf("inventory_id", "inventory"), wf("groups", "summary_fields.groups.results"), w("instance_id")},
+			w("description"), wf("inventory_id", "inventory"), wf("groups", "summary_fields.groups.results"), w("instance_id")},
 		Filters:  map[string]string{"inventory": "inventory__name", "group": "groups__name", "enabled": "enabled"},
 		Writable: []string{"name", "description", "inventory", "enabled", "variables", "instance_id"},
 		Refs:     map[string]string{"inventory": "inventories"}},
 	{Kind: "groups", Singular: "group", Path: "/groups/", NameField: "name", Order: "name", Scope: "inventory",
-		Fields:   []Field{f("id", "ID"), f("name", "NAME"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), w("description"), d("variables"), wf("inventory_id", "inventory")},
+		Fields:   []Field{f("id", "ID"), f("name", "NAME"), ff("inventory", "INVENTORY", "summary_fields.inventory.name"), w("description"), wf("inventory_id", "inventory")},
 		Filters:  map[string]string{"inventory": "inventory__name", "host": "hosts__name"},
 		Writable: []string{"name", "description", "inventory", "variables"},
 		Refs:     map[string]string{"inventory": "inventories"}},
@@ -246,6 +246,11 @@ var resources = []*Resource{
 		Fields: []Field{f("id", "ID"), f("name", "NAME"), f("capacity", "CAPACITY"), f("consumed_capacity", "USED"), f("jobs_running", "RUNNING"),
 			f("instances", "INSTANCES"), f("is_container_group", "CONTAINER")}},
 }
+
+// HasVariables are the kinds whose objects carry variables. They are never part
+// of `get <kind>`: they can run to pages, and `get variables` shows them (merged,
+// for a host, with where each value comes from).
+var HasVariables = map[string]bool{"hosts": true, "groups": true, "inventories": true}
 
 // unifiedTemplates is only a lookup target: a schedule can belong to a job
 // template, a workflow template, a project or an inventory source.

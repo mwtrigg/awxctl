@@ -681,12 +681,13 @@ func TestFieldsAndTimeZone(t *testing.T) {
 		t.Errorf("a list leaves the variables out: %s", out)
 	}
 	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "-o", "jsonl")
-	if strings.Contains(out, "big") || !strings.Contains(out, `"variables_hint":"left out: awxctl get variables hosts \"id:9\"`) {
+	if strings.Contains(out, "big") || !strings.Contains(out, `"variables_hint":"not shown here: awxctl get variables hosts \"id:9\"`) {
 		t.Errorf("one host: the variables are left out, with a pointer to get variables: %s", out)
 	}
-	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "--wide", "-o", "jsonl")
-	if !strings.Contains(out, "big") || strings.Contains(out, "variables_hint") {
-		t.Errorf("--wide shows them: %s", out)
+	for _, args := range [][]string{{"get", "hosts", "id:9", "--wide", "-o", "jsonl"}, {"get", "hosts", "--wide", "-o", "jsonl", "--filter", "name=web9"}, {"get", "inventories", "lab", "--wide"}} {
+		if out, _, _ := runCLI(t, env, args...); strings.Contains(out, "big") || strings.Contains(out, `"variables"`) {
+			t.Errorf("%v: variables are never part of get, even with --wide: %s", args, out)
+		}
 	}
 	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "-o", "table")
 	if strings.Contains(out, "VARIABLES") || strings.Contains(out, "big") {

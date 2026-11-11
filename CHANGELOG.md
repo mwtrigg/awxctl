@@ -6,8 +6,8 @@ are taken from this file (`scripts/release-notes.sh`).
 ## [Unreleased]
 
 ### Changed
-- `get hosts|groups|inventories <name>` no longer prints the object's variables (they can run to pages); a
-  `variables_hint` field points at `get variables`, and `--wide` still shows them.
+- `get hosts|groups|inventories` never prints variables, in a list or for one object, with or without `--wide`
+  (they can run to pages); one object carries a `variables_hint` that points at `get variables`.
 
 ## [0.3.0] - 2026-11-11
 

@@ -124,7 +124,7 @@ field. Kinds: `jobs`, `unified-jobs` (every run of any type), `workflow-jobs`,
 | `--order FIELD` | sort, `-` prefix for descending |
 | `--fields a,b,c` | keep only these fields of each row (every command, every format) |
 | `--tz ZONE` | show times in a zone (`America/New_York`, `local`; default UTC); also the zone of a `--since` written without one. `AWXCTL_TZ` sets it |
-| `--wide` | add the large fields a list leaves out (`variables`, `extra_vars`, `changes`). One object shows them too, except `variables`, which have their own command (`get variables`) and appear here only with `--wide` |
+| `--wide` | add the large fields a list leaves out (`extra_vars`, `changes`); one object always shows those. Variables of hosts, groups and inventories are never part of `get <kind>`: use `get variables` |
 | `--group-by FIELD` | count rows per value instead of listing them |
 | per kind | e.g. `--template`, `--inventory`, `--status`, `--project`, `--organization` |
 

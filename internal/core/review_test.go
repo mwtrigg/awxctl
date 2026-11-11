@@ -346,14 +346,31 @@ func TestWorkflowNodeSecretIsAlwaysSent(t *testing.T) {
 func TestListLeavesOutLargeFields(t *testing.T) {
 	hosts := FindResource("hosts")
 	o := Object{"id": 1, "name": "web1", "variables": `{"a": 1}`, "enabled": true}
-	if row := hosts.ListRow(o, false); row["variables"] != nil || row["name"] != "web1" {
-		t.Errorf("a list row has no variables: %v", row)
+	for _, row := range []map[string]any{hosts.ListRow(o, false), hosts.ListRow(o, true), hosts.Row(o)} {
+		if _, ok := row["variables"]; ok || row["name"] != "web1" {
+			t.Errorf("variables are never part of a host row (get variables shows them): %v", row)
+		}
 	}
-	if _, ok := hosts.ListRow(o, true)["variables"]; !ok {
-		t.Error("--wide brings the variables back")
+	jt := FindResource("job-templates")
+	t1 := Object{"id": 1, "name": "t", "extra_vars": `{"a": 1}`}
+	if _, ok := jt.ListRow(t1, false)["extra_vars"]; ok {
+		t.Error("a list row has no extra_vars")
 	}
-	if _, ok := hosts.Row(o)["variables"]; !ok {
-		t.Error("a single object always has them")
+	if _, ok := jt.ListRow(t1, true)["extra_vars"]; !ok {
+		t.Error("--wide brings extra_vars back")
+	}
+	if _, ok := jt.Row(t1)["extra_vars"]; !ok {
+		t.Error("a single template shows its extra_vars")
+	}
+	for kind := range HasVariables {
+		for _, fd := range FindResource(kind).Fields {
+			if fd.Key == "variables" {
+				t.Errorf("%s must not list variables as a field", kind)
+			}
+		}
+		if !FindResource(kind).CanWrite("variables") {
+			t.Errorf("%s variables can still be set with create and update", kind)
+		}
 	}
 	for _, kind := range []string{"hosts", "groups", "inventories", "job-templates", "jobs", "activity", "schedules"} {
 		r := FindResource(kind)
