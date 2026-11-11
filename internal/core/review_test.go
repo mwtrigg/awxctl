@@ -515,3 +515,39 @@ func TestCompareLastSuccess(t *testing.T) {
 		t.Errorf("verdict: %s", d.Verdict)
 	}
 }
+
+func TestVaultValuesAreTrimmed(t *testing.T) {
+	blob := "$ANSIBLE_VAULT;1.1;AES256\n3338383930353966643539613938\n6233663261643339336566343437\n"
+	in := map[string]any{
+		"mssql_username":   map[string]any{"__ansible_vault": blob}, // a name that does not look secret
+		"repo_url":         blob,
+		"ansible_password": map[string]any{"__ansible_vault": blob},
+		"plain":            "kept",
+		"nested":           map[string]any{"list": []any{blob, "x"}},
+		"not_vault":        map[string]any{"__ansible_vault": blob, "other": 1},
+	}
+	out, _ := json.Marshal(Mask(in))
+	if strings.Contains(string(out), "ANSIBLE_VAULT;1.1") && !strings.Contains(string(out), `"other":1`) {
+		t.Errorf("vault text must not be shown: %s", out)
+	}
+	m := Mask(in).(map[string]any)
+	if m["mssql_username"] != Vaulted || m["repo_url"] != Vaulted || m["plain"] != "kept" || m["ansible_password"] != "******" {
+		t.Errorf("a vaulted value is trimmed whatever its name; a secret-looking name is still masked: %v", m)
+	}
+	if l := m["nested"].(map[string]any)["list"].([]any); l[0] != Vaulted || l[1] != "x" {
+		t.Errorf("at any depth: %v", l)
+	}
+	// With secrets shown, vault text is still trimmed and nothing else is touched.
+	tv := TrimVault(in).(map[string]any)
+	if tv["ansible_password"] != Vaulted || tv["mssql_username"] != Vaulted || tv["plain"] != "kept" {
+		t.Errorf("TrimVault: %v", tv)
+	}
+	// Inside variables kept as text (YAML with the !vault tag, or JSON).
+	yamlText := "user: svc\nurl: !vault |\n  $ANSIBLE_VAULT;1.1;AES256\n  33383839303539\n  62336632616433\nport: 5986\n"
+	if got := maskText(yamlText); strings.Contains(got, "3338383930") || !strings.Contains(got, Vaulted) || !strings.Contains(got, `"port":5986`) {
+		t.Errorf("vault text inside YAML variables: %s", got)
+	}
+	if isVault("$ANSIBLE_VAULTED but not really") || isVault("see $ANSIBLE_VAULT; in the docs") {
+		t.Error("only text that starts as a vault blob is one")
+	}
+}

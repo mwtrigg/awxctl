@@ -6,6 +6,8 @@ are taken from this file (`scripts/release-notes.sh`).
 ## [Unreleased]
 
 ### Changed
+- A value encrypted with Ansible Vault is shown as `<vaulted>` everywhere, whatever the variable is called
+  and also with `--show-secrets` (a vault blob under a name that does not look secret used to print in full).
 - `get hosts|groups|inventories` never prints variables, in a list or for one object, with or without `--wide`
   (they can run to pages); one object carries a `variables_hint` that points at `get variables`.
 

@@ -193,7 +193,8 @@ var variablesCmd = &cobra.Command{
 --merged (hosts only) computes what the host ends up with: inventory variables,
 then its groups from the outermost in, then its own; sources says where each
 final value came from. Values of secret-looking names are shown as ******
-unless --show-secrets is given.`,
+unless --show-secrets is given. A value encrypted with Ansible Vault is always
+shown as <vaulted>, whatever its name: the encrypted text says nothing.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, err := kindArg(args[0])
@@ -222,7 +223,7 @@ unless --show-secrets is given.`,
 			if err != nil {
 				return err
 			}
-			row["variables"], row["sources"] = vars, sources
+			row["variables"], row["sources"] = core.TrimVault(vars), sources
 		} else {
 			vars, err := client.Get(cmd.Context(), r.Path+strconv.Itoa(core.ID(o))+"/variable_data/")
 			if err != nil {
@@ -231,7 +232,7 @@ unless --show-secrets is given.`,
 			if !show {
 				vars = core.Mask(vars).(map[string]any)
 			}
-			row["variables"] = vars
+			row["variables"] = core.TrimVault(vars)
 		}
 		return output.Print(output.Format(flagOutput), []output.Column{{Key: "kind", Header: "KIND"}, {Key: "name", Header: "NAME"}, {Key: "variables", Header: "VARIABLES"}}, []map[string]any{row})
 	},

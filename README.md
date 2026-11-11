@@ -264,7 +264,8 @@ Secrets: values of secret-looking fields are shown as `******` in all output and
 records, including inside `variables` and `extra_vars` text. "Secret-looking" goes by the name:
 it contains `pass`, `pwd`, `secret`, `token`, `private`, `vault`, `authorize`, `api_key` or
 `become_`, or has `key` or `pw` as a whole word between underscores (`ssh_key`, `db_pw`), or is
-`inputs`. A secret under another name is not recognised. Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
+`inputs`. A secret under another name is not recognised. A value encrypted with Ansible Vault is
+shown as `<vaulted>` whatever its name (it is no secret to show, but dozens of lines of nothing). Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
 stdin), not on the command line.
 
 ## For agents

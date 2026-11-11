@@ -151,7 +151,14 @@ var secretKey = regexp.MustCompile(`(?i)pass|pwd|(^|_)pw($|_)|secret|token|priva
 // used for everything that is printed or written to an audit file.
 func Mask(v any) any {
 	switch t := v.(type) {
+	case string:
+		if isVault(t) {
+			return Vaulted
+		}
 	case map[string]any:
+		if isVaultMap(t) {
+			return Vaulted
+		}
 		out := make(map[string]any, len(t))
 		for k, val := range t {
 			if secretKey.MatchString(k) && !strings.HasPrefix(k, "passwords_needed") && val != nil && val != "" && val != false {
@@ -169,6 +176,53 @@ func Mask(v any) any {
 		out := make([]any, len(t))
 		for i, val := range t {
 			out[i] = Mask(val)
+		}
+		return out
+	}
+	return v
+}
+
+// Vaulted stands in for an Ansible Vault value. Such a value is encrypted, so it
+// is no secret to show, but it is dozens of lines of hex that say nothing.
+const Vaulted = "<vaulted>"
+
+// isVault recognises vault text whatever the variable is called.
+func isVault(s string) bool {
+	return strings.HasPrefix(strings.TrimSpace(s), "$ANSIBLE_VAULT;")
+}
+
+// isVaultMap recognises the form the controller's JSON gives a vaulted variable:
+// {"__ansible_vault": "$ANSIBLE_VAULT;..."}.
+func isVaultMap(m map[string]any) bool {
+	if len(m) != 1 {
+		return false
+	}
+	s, ok := m["__ansible_vault"].(string)
+	return ok && isVault(s)
+}
+
+// TrimVault replaces every vault value in v with the Vaulted marker and leaves
+// everything else as it is. It is applied even where secrets are asked to be
+// shown: there is nothing to read in a vault blob.
+func TrimVault(v any) any {
+	switch t := v.(type) {
+	case string:
+		if isVault(t) {
+			return Vaulted
+		}
+	case map[string]any:
+		if isVaultMap(t) {
+			return Vaulted
+		}
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = TrimVault(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = TrimVault(val)
 		}
 		return out
 	}
@@ -198,11 +252,13 @@ func maskText(text string) string {
 	if same(masked, obj) {
 		return text // nothing to hide: keep the text exactly as written
 	}
-	b, err := json.Marshal(masked)
-	if err != nil {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // keep <vaulted> readable
+	if err := enc.Encode(masked); err != nil {
 		return "******"
 	}
-	return string(b)
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 func maskMap(m map[string]any) map[string]any {
