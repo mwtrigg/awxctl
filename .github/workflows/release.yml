@@ -33,7 +33,11 @@ jobs:
           persist-credentials: false
       - name: The tag must point at a commit that is on main
         run: |
-          git fetch --no-tags origin main
+          # The checkout above (fetch-depth: 0) already brought origin/main. The extra fetch
+          # refreshes it where it can; in a private repository it has no credentials (they are
+          # deliberately not kept) and fails, and the checkout's copy is used. Without an
+          # origin/main the check below fails, so nothing is released.
+          git fetch --no-tags origin main 2>/dev/null || echo "no credentials for a second fetch: using origin/main from the checkout"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main: not releasing"; exit 1; }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -66,7 +70,11 @@ jobs:
           persist-credentials: false   # the token does not sit in .git/config next to the signing key
       - name: The tag must point at a commit that is on main
         run: |
-          git fetch --no-tags origin main
+          # The checkout above (fetch-depth: 0) already brought origin/main. The extra fetch
+          # refreshes it where it can; in a private repository it has no credentials (they are
+          # deliberately not kept) and fails, and the checkout's copy is used. Without an
+          # origin/main the check below fails, so nothing is released.
+          git fetch --no-tags origin main 2>/dev/null || echo "no credentials for a second fetch: using origin/main from the checkout"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main: not releasing"; exit 1; }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
