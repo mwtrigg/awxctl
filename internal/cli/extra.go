@@ -73,7 +73,7 @@ On AAP 2.5 and newer tokens belong to the platform gateway; awxctl goes there.`,
 		row := map[string]any{"id": step.Result["id"], "scope": step.Result["scope"], "expires": step.Result["expires"], "description": desc}
 		secret, _ := step.Raw()["token"].(string)
 		if save != "" {
-			if err := os.WriteFile(save, []byte(secret+"\n"), 0o600); err != nil {
+			if err := writePrivate(save, []byte(secret+"\n")); err != nil {
 				return fmt.Errorf("the token (id %v) was created but could not be saved: %w; delete it and try again", row["id"], err)
 			}
 			row["saved_to"] = save
@@ -360,7 +360,7 @@ var surveyGetCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(save, data, 0o600); err != nil {
+			if err := writePrivate(save, data); err != nil {
 				return err
 			}
 			s["saved_to"] = save
@@ -450,7 +450,7 @@ var workflowGraphCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(save, data, 0o600); err != nil {
+			if err := writePrivate(save, data); err != nil {
 				return err
 			}
 			fmt.Fprintln(os.Stderr, "saved to", save)

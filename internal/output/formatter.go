@@ -45,6 +45,10 @@ var Limit int
 // (0 = not known). It can be more than the rows printed.
 var Total int
 
+// TotalKnown says that Total was set by a list command, so a total of 0 is
+// reported too ("how many failed jobs": none).
+var TotalKnown bool
+
 // Fetched is the number of rows the API returned, when that is not the number of rows
 // printed (grouped output prints groups, not the rows that were limited). 0 = use the
 // printed rows.
@@ -188,7 +192,7 @@ func printJSON(_ []Column, rows []map[string]any) error {
 		"count":   len(rows),
 		"command": Command,
 	}
-	if Total > 0 {
+	if Total > 0 || TotalKnown {
 		meta["total"] = Total // matching objects on the server; count is the rows returned here
 	}
 	if Limit > 0 {

@@ -60,6 +60,23 @@ type Recorder interface {
 // ErrSteps reports that some steps of a plan failed.
 var ErrSteps = errors.New("some changes failed")
 
+// StepsError says how many steps failed and carries the first failure, so the
+// caller still sees what kind it was (denied, not found, ...).
+type StepsError struct {
+	Failed, Total int
+	First         error
+}
+
+func (e *StepsError) Error() string {
+	if e.Total == 1 {
+		return e.First.Error()
+	}
+	return fmt.Sprintf("%d of %d changes failed; first: %v", e.Failed, e.Total, e.First)
+}
+
+// Unwrap exposes both ErrSteps and the first failure to errors.Is and errors.As.
+func (e *StepsError) Unwrap() []error { return []error{ErrSteps, e.First} }
+
 // Apply runs the steps in order. A step that fails for sure is marked and the run
 // goes on; a step whose outcome is unknown stops the run, since sending more could
 // make things worse. A record that cannot be written also stops it.
@@ -70,8 +87,12 @@ func (p *Plan) Apply(ctx context.Context, c *Client, rec Recorder) error {
 		}
 	}
 	failed := 0
-	var stop error
+	var stop, first error
 	for _, s := range p.Steps {
+		if stop == nil && ctx.Err() != nil {
+			// Interrupted before this step: it was certainly not sent.
+			stop = fmt.Errorf("interrupted before %s: %w", s.Target, ctx.Err())
+		}
 		if stop != nil {
 			s.Status = "skipped"
 			continue
@@ -100,6 +121,9 @@ func (p *Plan) Apply(ctx context.Context, c *Client, rec Recorder) error {
 		default:
 			s.Status, s.Error = "failed", err.Error()
 			failed++
+			if first == nil {
+				first = err
+			}
 		}
 		if rec != nil {
 			if uerr := rec.Update(p); uerr != nil && stop == nil {
@@ -108,15 +132,20 @@ func (p *Plan) Apply(ctx context.Context, c *Client, rec Recorder) error {
 		}
 	}
 	if stop != nil {
+		if rec != nil {
+			_ = rec.Update(p) // the skipped steps
+		}
 		return stop
 	}
 	if failed > 0 {
-		return fmt.Errorf("%w: %d of %d", ErrSteps, failed, len(p.Steps))
+		return &StepsError{Failed: failed, Total: len(p.Steps), First: first}
 	}
 	return nil
 }
 
-var secretKey = regexp.MustCompile(`(?i)pass|secret|token|private|ssh_key|api_?key|credential_inputs|^inputs$|become_|vault|webhook_key|authorize`)
+// secretKey decides by name what is a secret. It is a heuristic: a secret under a
+// name it does not know (the README lists the pattern) is not masked.
+var secretKey = regexp.MustCompile(`(?i)pass|pwd|(^|_)pw($|_)|secret|token|private|(^|_)key($|_)|api_?key|credential_inputs|^inputs$|become_|vault|authorize`)
 
 // Mask returns a copy of v with the values of secret-looking keys replaced. It is
 // used for everything that is printed or written to an audit file.
@@ -154,7 +183,15 @@ var structuredText = map[string]bool{"variables": true, "extra_vars": true, "sou
 // that is not a mapping is returned as it is.
 func maskText(text string) string {
 	var obj map[string]any
-	if strings.TrimSpace(text) == "" || yaml.Unmarshal([]byte(text), &obj) != nil || obj == nil {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	if yaml.Unmarshal([]byte(text), &obj) != nil || obj == nil {
+		// Not a mapping this parser accepts (the controller's parser is more
+		// forgiving). If it still names something secret-looking, hide it all.
+		if secretKey.MatchString(text) {
+			return "******"
+		}
 		return text
 	}
 	masked := Mask(obj).(map[string]any)
@@ -260,12 +297,17 @@ func (r *FileRecorder) Prune() {
 			continue
 		}
 		full := filepath.Join(r.Dir, n)
-		if data, err := os.ReadFile(full); err == nil && strings.Contains(string(data), `"status": "unknown"`) {
+		// A record with a step that is unknown or still planned (the run was
+		// interrupted) is evidence someone has yet to look at: it is never pruned.
+		data, err := os.ReadFile(full)
+		if err != nil || strings.Contains(string(data), `"status": "unknown"`) || strings.Contains(string(data), `"status": "planned"`) {
 			continue
 		}
 		_ = os.Remove(full)
 	}
 }
+
+var recordName = regexp.MustCompile(`^\d{8}T\d{6}Z-.+-[0-9a-f]{8}\.json$`)
 
 // RecordNames lists the record files of a directory, newest first.
 func RecordNames(dir string) ([]string, error) {
@@ -278,7 +320,7 @@ func RecordNames(dir string) ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+		if !e.IsDir() && recordName.MatchString(e.Name()) { // only awxctl's own records, never another .json
 			names = append(names, e.Name())
 		}
 	}

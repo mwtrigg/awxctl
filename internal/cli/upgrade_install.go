@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -300,6 +301,8 @@ func replaceFile(execPath string, content []byte) error {
 	return nil
 }
 
+var devBuild = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?-\d+-g[0-9a-f]{7,}(-dirty)?$`)
+
 // olderRelease reports whether latest is a lower version than current. Versions
 // that do not parse (a development build) are never considered older. A
 // pre-release (v0.1.0-rc.1) is lower than the release it leads up to (v0.1.0), so a
@@ -309,6 +312,11 @@ func olderRelease(current, latest string) bool {
 	l, lok := semverParts(latest)
 	if !cok || !lok {
 		return false
+	}
+	// A build from a commit after a release (git describe: 0.1.0-3-gabc1234,
+	// perhaps with -dirty) is newer than that release, not a pre-release of it.
+	if devBuild.MatchString(stripV(current)) && l == c {
+		return true
 	}
 	for i := range c {
 		if l[i] != c[i] {

@@ -86,11 +86,24 @@ func (c *Client) PlanCreate(ctx context.Context, r *Resource, values map[string]
 	return &Plan{Command: "create " + r.Singular, Tier: "write", Steps: []*Step{step}}, nil
 }
 
-// same compares a current API value with a wanted one, by their JSON form.
+// same compares a current API value with a wanted one, by their JSON form. A
+// number and a text that read the same are the same: the controller stores 42
+// in a text field as "42", and that is the change that was asked for.
 func same(a, b any) bool {
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)
-	return string(ja) == string(jb)
+	if string(ja) == string(jb) {
+		return true
+	}
+	return isScalar(a) && isScalar(b) && fmt.Sprint(a) == fmt.Sprint(b)
+}
+
+func isScalar(v any) bool {
+	switch v.(type) {
+	case string, bool, int, int64, float64, json.Number:
+		return true
+	}
+	return false
 }
 
 // PlanUpdate builds the change of the given fields on each object. A field that

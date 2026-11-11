@@ -100,7 +100,7 @@ The JSON result has the text plus line numbers; --text prints only the text.`,
 		}
 		row := map[string]any{"job_id": j.ID, "type": j.Type, "status": j.Status(), "finished": core.Finished(j.Status()), "next_line": next}
 		if outSave != "" {
-			if err := os.WriteFile(outSave, []byte(text), 0o600); err != nil {
+			if err := writePrivate(outSave, []byte(text)); err != nil {
 				return err
 			}
 			row["saved_to"], row["bytes"] = outSave, len(text)

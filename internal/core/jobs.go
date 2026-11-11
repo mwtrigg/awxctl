@@ -264,6 +264,8 @@ type Diagnosis struct {
 	// a failed task: the last task that ran and the hosts that never returned from it.
 	Stalled map[string]any `json:"stalled,omitempty"`
 	Tail    []string       `json:"tail,omitempty"` // last output lines, when there is no better evidence
+
+	failedHosts int // distinct hosts among the failure events
 }
 
 // maxFailureEvents bounds how many failed task results a diagnosis reads.
@@ -272,19 +274,43 @@ const maxFailureEvents = 1000
 // groupFailures folds failure events into one entry per distinct failure. Two
 // results are the same failure when the event, play, role, task and message
 // agree once the host's own name is taken out of the message.
-func groupFailures(evs []Object) []map[string]any {
+func groupFailures(evs []Object) (groups_ []map[string]any, ignored int, hostCount int) {
 	var order []string
 	groups := map[string]map[string]any{}
+	// A failed loop task reports each failed item and then the task once more
+	// ("One or more items failed"): with item results present, the summary is
+	// the same failure a second time.
+	hasItems := map[string]bool{}
 	for _, e := range evs {
+		if e["event"] == "runner_item_on_failed" {
+			hasItems[fmt.Sprint(e["host_name"], "\x00", e["parent_uuid"], "\x00", e["task"])] = true
+		}
+	}
+	allHosts := map[string]bool{}
+	for _, e := range evs {
+		// An error the play was told to ignore did not fail anything.
+		if Lookup(e, "event_data.ignore_errors") == true {
+			ignored++
+			continue
+		}
+		if e["event"] == "runner_on_failed" && hasItems[fmt.Sprint(e["host_name"], "\x00", e["parent_uuid"], "\x00", e["task"])] {
+			continue
+		}
 		row := EventRow(e)
 		host, _ := row["host"].(string)
 		msg := fmt.Sprint(row["message"])
 		if row["message"] == nil {
 			msg = ""
 		}
-		norm := msg
+		norm := replaceWord(msg, host, "<host>")
+		// An unreachable host's message names its address, not its inventory name.
+		for _, alt := range []string{"event_data.remote_addr", "event_data.res.ansible_host"} {
+			if addr, _ := Lookup(e, alt).(string); addr != "" && addr != host {
+				norm = replaceWord(norm, addr, "<host>")
+			}
+		}
 		if host != "" {
-			norm = strings.ReplaceAll(msg, host, "<host>")
+			allHosts[host] = true
 		}
 		key := fmt.Sprint(row["event"], "\x00", row["play"], "\x00", row["role"], "\x00", row["task"], "\x00", norm)
 		g := groups[key]
@@ -309,12 +335,52 @@ func groupFailures(evs []Object) []map[string]any {
 	out := make([]map[string]any, len(order))
 	for i, k := range order {
 		g := groups[k]
-		hosts := g["hosts"].([]string)
-		sort.Strings(hosts)
+		hosts := uniqueSorted(g["hosts"].([]string))
 		g["hosts"], g["host_count"] = hosts, len(hosts)
 		out[i] = g
 	}
+	return out, ignored, len(allHosts)
+}
+
+func uniqueSorted(in []string) []string {
+	sort.Strings(in)
+	out := in[:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
+		}
+	}
 	return out
+}
+
+// replaceWord replaces name where it stands as a whole host name or address, not
+// where it is part of a longer word: host "a" must not rewrite every letter a.
+func replaceWord(text, name, with string) string {
+	if name == "" || !strings.Contains(text, name) {
+		return text
+	}
+	isWord := func(r byte) bool {
+		return r == '_' || r == '-' || r == '.' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+	}
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		j := strings.Index(text[i:], name)
+		if j < 0 {
+			b.WriteString(text[i:])
+			break
+		}
+		start, end := i+j, i+j+len(name)
+		before := start > 0 && isWord(text[start-1])
+		after := end < len(text) && isWord(text[end]) && !(text[end] == '.' && (end+1 == len(text) || !isWord(text[end+1])))
+		b.WriteString(text[i:start])
+		if before || after {
+			b.WriteString(name)
+		} else {
+			b.WriteString(with)
+		}
+		i = end
+	}
+	return b.String()
 }
 
 // stalled finds where a job stopped: the newest task result, the task it belongs
@@ -401,8 +467,17 @@ func (c *Client) Diagnose(ctx context.Context, id int) (*Diagnosis, error) {
 		if err != nil {
 			return nil, err
 		}
-		d.Failures = groupFailures(evs)
-		d.Job["failed_results"] = total
+		var ignored int
+		d.Failures, ignored, d.failedHosts = groupFailures(evs)
+		d.Job["failed_results"] = total - ignored
+		if ignored > 0 {
+			d.Job["ignored_errors"] = ignored
+		}
+		// Events are stored after the job ends: until that is done, failures can
+		// be missing and a host can look as if it never returned.
+		if j.Obj["event_processing_finished"] == false {
+			d.Job["events_complete"] = false
+		}
 		if total > len(evs) {
 			d.Job["failed_results_read"] = len(evs)
 		}
@@ -462,6 +537,9 @@ func verdict(j *Job, d *Diagnosis) string {
 	if expl != "" {
 		why = " (" + expl + ")"
 	}
+	if d.Job["events_complete"] == false {
+		stuck += "; the controller is still storing this job's events, so this may be incomplete: ask again in a moment"
+	}
 	results := 0
 	for _, f := range d.Failures {
 		results += max(asInt(f["host_count"]), 1)
@@ -470,8 +548,8 @@ func verdict(j *Job, d *Diagnosis) string {
 	case !Finished(st):
 		return fmt.Sprintf("not finished yet: status %s", st)
 	case st == "successful":
-		if results > 0 {
-			return fmt.Sprintf("successful, with %d task failure(s) that were ignored or rescued", results)
+		if n := results + asInt(d.Job["ignored_errors"]); n > 0 {
+			return fmt.Sprintf("successful, with %d task failure(s) that were ignored or rescued", n)
 		}
 		return "successful"
 	case st == "canceled":
@@ -485,7 +563,7 @@ func verdict(j *Job, d *Diagnosis) string {
 		if len(hosts) == 1 {
 			where = "on host " + hosts[0]
 		}
-		return fmt.Sprintf("%s: %d failed task result(s) on %d host(s), %d distinct failure(s); first: task %q %s", st, results, max(len(d.Hosts), 1), len(d.Failures), first["task"], where) + why + stuck
+		return fmt.Sprintf("%s: %d failed task result(s) on %d host(s), %d distinct failure(s); first: task %q %s", st, results, max(d.failedHosts, 1), len(d.Failures), first["task"], where) + why + stuck
 	case expl != "":
 		return st + ": " + expl + stuck
 	case j.Obj["result_traceback"] != nil && j.Obj["result_traceback"] != "":

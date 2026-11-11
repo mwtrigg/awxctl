@@ -362,7 +362,9 @@ func (c *Client) PlanGraph(ctx context.Context, wfRef string, want []GraphNode) 
 		if h.Limit != n.Limit {
 			change["limit"], before["limit"] = n.Limit, h.Limit
 		}
-		if n.ExtraData != nil && !same(maskMap(n.ExtraData), h.ExtraData) {
+		// A secret reads back masked and cannot be compared: send extra_data
+		// whenever it holds one, as update does for secret fields.
+		if n.ExtraData != nil && (!same(maskMap(n.ExtraData), h.ExtraData) || !same(maskMap(n.ExtraData), n.ExtraData)) {
 			change["extra_data"], before["extra_data"] = n.ExtraData, h.ExtraData
 		}
 		if len(change) > 0 {

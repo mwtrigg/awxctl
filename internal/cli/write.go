@@ -139,7 +139,11 @@ func runPlanMode(cmd *cobra.Command, ctx *config.Context, ctxName string, client
 	}
 	if rec != nil && rec.Path() != "" {
 		fmt.Fprintln(os.Stderr, "record:", rec.Path())
-		rec.Prune()
+		// An MCP agent must not be able to push older records out with cheap
+		// changes: records are only pruned by runs a person started.
+		if os.Getenv("AWXCTL_FROM_MCP") == "" {
+			rec.Prune()
+		}
 	}
 	if runErr != nil {
 		code := classify(runErr)
@@ -264,6 +268,23 @@ func readValues(cmd *cobra.Command) (map[string]any, error) {
 		}
 	}
 	return values, nil
+}
+
+// writePrivate writes a file only its owner can read. An existing file is replaced
+// rather than written into, so its looser mode or a symlink is not kept.
+func writePrivate(path string, data []byte) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func secretLooking(k string) bool {

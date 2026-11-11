@@ -282,6 +282,8 @@ func (r *Resource) Row(o Object) map[string]any {
 			var obj map[string]any // shown as an object, secret-looking values masked
 			if json.Unmarshal([]byte(s), &obj) == nil {
 				v = Mask(obj)
+			} else {
+				v = maskText(s) // {a: b} is YAML, not JSON: mask it as text
 			}
 		} else if m, ok := v.(map[string]any); ok && fd.Key == "extra_data" {
 			v = Mask(m)

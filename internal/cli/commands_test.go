@@ -575,3 +575,71 @@ func TestMCPCannotGetAroundTheAllowlist(t *testing.T) {
 		t.Error("approve and deny appear with --allow-approvals; launch and update stay")
 	}
 }
+
+func TestDeniedChangeExitsEight(t *testing.T) {
+	srv, env := lab(t, "awx", "operator")
+	srv.Handle("/job_templates/7/launch/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fakeawx.JSON(w, 200, map[string]any{})
+			return
+		}
+		fakeawx.JSON(w, 403, map[string]any{"detail": "You do not have permission to perform this action."})
+	})
+	_, errOut, code := runCLI(t, env, "launch", "Patch", "--apply")
+	if code != 8 || !strings.Contains(errOut, "HTTP 403") || !strings.Contains(errOut, `"kind":"permission"`) {
+		t.Errorf("a change the controller denies exits 8 and says why: exit %d %s", code, errOut)
+	}
+}
+
+func TestMCPRunsNeverPruneRecords(t *testing.T) {
+	_, env := lab(t, "awx", "operator")
+	env = with(env, "AWXCTL_STATE_KEEP", "1")
+	count := func() int {
+		files, _ := filepath.Glob(filepath.Join(env["AWXCTL_STATE_DIR"], "*.json"))
+		return len(files)
+	}
+	mcp := with(env, "AWXCTL_FROM_MCP", "1", "AWXCTL_MODE", "dry-run", "AWXCTL_MCP_WRITES", "1")
+	for _, verb := range []string{"disable", "enable", "disable"} {
+		if _, errOut, code := runCLI(t, mcp, verb, "hosts", "web1", "--apply"); code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+	}
+	if n := count(); n != 3 {
+		t.Errorf("an agent's changes must not push older records out: %d records, want 3", n)
+	}
+	if _, _, code := runCLI(t, env, "enable", "hosts", "web1", "--apply"); code != 0 || count() != 1 {
+		t.Errorf("a person's run prunes to state_keep: %d records", count())
+	}
+}
+
+func TestListDetails(t *testing.T) {
+	_, env := lab(t, "awx", "readonly")
+	out, _, code := runCLI(t, env, "get", "hosts", "--filter", "name=no-such-host")
+	if code != 0 || !strings.Contains(out, `"total": 0`) {
+		t.Errorf("a list with no match still says total 0: exit %d %s", code, out)
+	}
+	if _, errOut, code := runCLI(t, env, "get", "hosts", "--limit", "0"); code != 5 || !strings.Contains(errOut, "meta.total") {
+		t.Errorf("--limit 0 must be refused with a pointer to the count: exit %d %s", code, errOut)
+	}
+	if _, errOut, code := runCLI(t, with(env, "AWXCTL_MODE", "aply"), "get", "hosts"); code != 5 || !strings.Contains(errOut, "aply") {
+		t.Errorf("a misspelt mode must be refused: exit %d %s", code, errOut)
+	}
+}
+
+func TestDevBuildIsNewerThanItsRelease(t *testing.T) {
+	for _, tc := range []struct {
+		current, latest string
+		older           bool
+	}{
+		{"v0.1.0-3-gdf7ff83", "v0.1.0", true},
+		{"0.1.0-3-gdf7ff83-dirty", "v0.1.0", true},
+		{"v0.1.0-3-gdf7ff83", "v0.1.1", false},
+		{"v0.1.0-rc.1", "v0.1.0", false},
+		{"v0.1.0", "v0.1.0-rc.1", true},
+		{"v0.2.0", "v0.1.9", true},
+	} {
+		if got := olderRelease(tc.current, tc.latest); got != tc.older {
+			t.Errorf("olderRelease(%s, %s) = %v, want %v", tc.current, tc.latest, got, tc.older)
+		}
+	}
+}

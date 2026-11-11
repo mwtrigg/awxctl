@@ -57,9 +57,9 @@ func TestListNeverFollowsAnotherHost(t *testing.T) {
 		calls++
 		fakeawx.JSON(w, 200, map[string]any{"count": 2, "next": "https://other.example.com/api/v2/jobs/?page=2", "results": []map[string]any{{"id": 1}}})
 	})
-	objs, _, err := c.List(context.Background(), "/jobs/", nil, 0)
-	if err != nil || len(objs) != 1 || calls != 1 {
-		t.Errorf("a next link to another host must end the list: %d objects, %d calls, %v", len(objs), calls, err)
+	_, _, err := c.List(context.Background(), "/jobs/", nil, 0)
+	if err == nil || calls != 1 || !strings.Contains(err.Error(), "another host (other.example.com)") || !strings.Contains(err.Error(), "read 1 of 2") {
+		t.Errorf("a next link to another host must not be followed and must not end the list quietly: %d calls, %v", calls, err)
 	}
 }
 

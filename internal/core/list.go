@@ -88,17 +88,44 @@ func (c *Client) List(ctx context.Context, rel string, q url.Values, limit int) 
 			return objs[:limit], total, nil
 		}
 		next = ""
-		if page.Next != nil {
+		if page.Next != nil && *page.Next != "" {
 			// "next" is a server path that already carries the API prefix. Only a
-			// path on this server is followed, never another host.
-			if n := *page.Next; strings.HasPrefix(n, "/") && !strings.HasPrefix(n, "//") {
+			// path on this server is followed, never another host; a link that
+			// cannot be followed is an error, not a quiet end of the list.
+			n := *page.Next
+			u, err := url.Parse(n)
+			switch {
+			case strings.HasPrefix(n, "/") && !strings.HasPrefix(n, "//"):
 				next = n
-			} else if u, err := url.Parse(n); err == nil && u.Host == c.base.Host {
+			case err == nil && sameHost(u, c.base):
 				next = u.RequestURI()
+			default:
+				return nil, 0, fmt.Errorf("%w: the list has more pages, but the next page is on another host (%s), which awxctl does not follow: read %d of %d; if the controller sits behind a proxy under another name, use that name as the url", ErrConnect, hostOf(n), len(objs), total)
 			}
 		}
 	}
 	return objs, total, nil
+}
+
+// sameHost compares two URLs' hosts, with the default ports filled in.
+func sameHost(a, b *url.URL) bool {
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		if u.Scheme == "http" {
+			return "80"
+		}
+		return "443"
+	}
+	return strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b) && (a.Scheme == b.Scheme || a.Scheme == "")
+}
+
+func hostOf(link string) string {
+	if u, err := url.Parse(link); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return "unreadable link"
 }
 
 // Get reads one object (rel like "/jobs/12/").

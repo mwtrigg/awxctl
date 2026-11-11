@@ -18,6 +18,24 @@ are taken from this file (`scripts/release-notes.sh`).
 - On a template with a survey, extra variables that are not survey questions are refused when the template does
   not prompt for variables; a launch whose fields the controller ignored ends with exit 7, not as applied.
 
+- A successful update of a text field with a number-like value no longer ends as "outcome unknown" (exit 7).
+- A change the controller denies exits 8 and says why (it exited 1 with "some changes failed").
+- An answer that is too large (256 MB) is an error, never a cut text; job output is no longer cut at 64 MB.
+- A list whose next page is on another host name is an error that says so, not a quietly shorter list.
+- Ctrl-C and a kill are handled: the audit record is completed (in flight: unknown, later steps: skipped) before
+  the process ends; a step that was never sent is skipped, not unknown.
+- Audit records with an unknown or unfinished step are never pruned; only awxctl's own record files are ever
+  deleted; runs started by the MCP server never prune.
+- Secrets in `extra_vars` written as YAML with braces are masked; text that cannot be parsed but names a
+  secret is hidden whole. More names count as secret-looking (`pwd`, `*_pw`, `*_key`).
+- `set workflow-graph` sends a node's `extra_data` whenever it holds a secret (a changed secret was not sent).
+- `diagnose job`: errors the play ignored are not failures (counted as `ignored_errors`), a failed loop is not
+  counted twice, a host name is only replaced as a whole word, unreachable hosts group together, hosts are
+  counted from the failures, and it says when the controller is still storing the job's events.
+- `meta.total` is present when nothing matches; `--limit 0` is refused; a misspelt `mode` is refused; a build
+  from a commit after a release is not "upgraded" back to that release; an `http://` url gets a warning.
+- MCP results start with a line marking them as data from the controller.
+
 ### Changed
 - `diagnose job` lists each distinct failure once, with the hosts it hit (hosts that failed the same task
   with the same message share an entry), and its play, role, task, file and line.

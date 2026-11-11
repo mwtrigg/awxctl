@@ -22,6 +22,13 @@ import (
 	"github.com/mwtrigg/awxctl/internal/config"
 )
 
+// maxAnswer is the largest API answer that is read (a var so a test can lower it).
+var maxAnswer = 256 << 20
+
+// ErrTooLarge means an answer was larger than awxctl reads; it is refused whole
+// rather than returned cut.
+var ErrTooLarge = errors.New("too large")
+
 // Errors a caller can test for with errors.Is.
 var (
 	ErrConnect  = errors.New("cannot reach the controller")
@@ -200,7 +207,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			break
 		}
 	}
-	if !read {
+	if !read && !errors.Is(last, ErrTooLarge) {
 		var api *APIError
 		if !errors.As(last, &api) || api.Status == http.StatusBadGateway || api.Status == http.StatusGatewayTimeout {
 			return &OutcomeUnknownError{Method: method, Path: path, Cause: last}
@@ -239,9 +246,13 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 		return true, fmt.Errorf("%w: %s %s: %v", ErrConnect, method, path, scrub(err))
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxAnswer)+1))
 	if err != nil {
 		return true, fmt.Errorf("%w: %s %s: reading the answer: %v", ErrConnect, method, path, err)
+	}
+	if len(data) > maxAnswer {
+		// Never hand back a cut answer as if it were whole.
+		return false, fmt.Errorf("%w: %s %s: the answer is larger than %d MB", ErrTooLarge, method, path, maxAnswer>>20)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if out == nil || len(data) == 0 {

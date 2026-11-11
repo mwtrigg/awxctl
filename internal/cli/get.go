@@ -179,6 +179,9 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		if err != nil {
 			return err
 		}
+		if cmd.Flags().Changed("limit") && getLimit == 0 {
+			return &usageError{"--limit 0 is not a limit: use --limit 1 and read meta.total for a count, or --limit -1 for everything"}
+		}
 		limit := effectiveLimit(cmd, ctx.DefaultLimit)
 		objs, total, err := client.List(cmd.Context(), r.Path, q, limit)
 		if err != nil {
@@ -188,7 +191,7 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		for i, o := range objs {
 			rows[i] = r.Row(o)
 		}
-		output.Limit, output.Total = limit, total
+		output.Limit, output.Total, output.TotalKnown = limit, total, true
 		if total > len(rows) {
 			output.Fetched = limit // there are more than were read
 		}

@@ -3,9 +3,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,6 +30,8 @@ var (
 	flagTimeout  time.Duration
 	flagRetries  int
 )
+
+var warnedHTTP bool
 
 // cliErr carries an exit code for an error that was already printed.
 type cliErr struct{ code int }
@@ -55,7 +62,7 @@ Settings: flags override AWXCTL_* environment variables, which override
 		}
 		output.Raw = flagRaw
 		output.Field = flagField
-		output.Limit, output.Fetched, output.Total = 0, 0, 0
+		output.Limit, output.Fetched, output.Total, output.TotalKnown = 0, 0, 0, false
 		output.Command = strings.TrimPrefix(cmd.CommandPath(), "awxctl ")
 		if flagYes {
 			flagApply = true
@@ -85,6 +92,8 @@ func classify(err error) int {
 	switch {
 	case errors.As(err, &uo):
 		return output.ExitUnknown
+	case errors.Is(err, context.Canceled):
+		return output.ExitError // interrupted before anything (more) was sent
 	case errors.As(err, &pe), errors.Is(err, core.ErrDenied):
 		return output.ExitPermission
 	case errors.Is(err, config.ErrNotConfigured), errors.As(err, &ue), errors.As(err, &fe), isCobraUsage(err),
@@ -113,7 +122,12 @@ func isCobraUsage(err error) bool {
 
 // Execute runs the root command and returns the exit code.
 func Execute() int {
-	if err := rootCmd.Execute(); err != nil {
+	// Ctrl-C and a kill from a supervisor (the MCP server's time limit) cancel the
+	// context: the request in flight is recorded as outcome unknown, later steps
+	// as skipped, and the audit record is written before the process ends.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		var ce *cliErr
 		if errors.As(err, &ce) {
 			return ce.code
@@ -134,6 +148,13 @@ func connect() (*config.Context, string, *core.Client, error) {
 	_, ctx, err := config.LoadConfig(flagContext)
 	if err != nil {
 		return nil, "", nil, err
+	}
+	if err := ctx.ValidateMode(); err != nil {
+		return nil, "", nil, &usageError{err.Error()}
+	}
+	if strings.HasPrefix(strings.ToLower(ctx.URL), "http://") && !warnedHTTP {
+		warnedHTTP = true
+		fmt.Fprintln(os.Stderr, "warning: the url is http://, so the token and everything else travel unencrypted")
 	}
 	if flagInsecure {
 		off := false

@@ -142,6 +142,7 @@ func resetFlags(c *cobra.Command) {
 	}
 	c.Flags().VisitAll(reset)
 	c.PersistentFlags().VisitAll(reset)
+	c.SetContext(nil) //nolint:staticcheck // a command keeps the context of its first run; each test run gets a fresh one
 	for _, sub := range c.Commands() {
 		resetFlags(sub)
 	}
