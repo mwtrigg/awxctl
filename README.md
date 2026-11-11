@@ -30,8 +30,8 @@ awxctl launch "Patch servers" --limit web1 --apply --wait
 "Tested" means the commands were run against a real instance of that version. The
 AAP instance used had no subscription, so launching and everything else that starts
 a job is tested on AWX only. A version that is not in the table may well work:
-`awxctl doctor` reads every API path awxctl depends on and reports what is missing
-or different, and says whether the version is a tested one. Run it first on a new
+`awxctl doctor` reads every API path awxctl depends on (GET requests only) and
+reports what is missing or different, and says whether the version is a tested one. Run it first on a new
 version; the table is updated when a version has been checked.
 
 awxctl reads the API index (`/api/`) to find out which one it is talking to and where

@@ -409,9 +409,14 @@ func TestDoctorReportsWhatIsMissing(t *testing.T) {
 	if !strings.Contains(out, "aap, controller 4.6.2") || !strings.Contains(out, "NOT a version awxctl is tested with") {
 		t.Errorf("the version verdict is missing:\n%s", strings.SplitN(out, "\n", 2)[0])
 	}
-	for _, r := range changing(srv) {
-		if !strings.HasSuffix(r.Path, "/schedules/preview/") {
-			t.Errorf("doctor must only read: %s %s", r.Method, r.Path)
-		}
+	if w := changing(srv); len(w) != 0 {
+		t.Errorf("doctor must send GET requests only by default: %+v", w)
+	}
+	if status["schedule preview"] != "skipped" {
+		t.Errorf("the preview check must be skipped by default: %s", status["schedule preview"])
+	}
+	runCLI(t, env, "doctor", "--with-preview", "-o", "jsonl")
+	if w := changing(srv); len(w) != 1 || !strings.HasSuffix(w[0].Path, "/schedules/preview/") {
+		t.Errorf("--with-preview adds exactly the preview POST: %+v", w)
 	}
 }

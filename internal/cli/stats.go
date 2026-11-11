@@ -247,8 +247,9 @@ var testedVersions = map[core.Flavor][]string{core.FlavorAWX: {"24.6"}, core.Fla
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check that this controller serves everything awxctl uses, and report what is missing or different",
-	Long: `Reads (and only reads) every API path awxctl depends on and reports each as ok,
-missing, denied or error. Run it against a new controller version before trusting
+	Long: `Reads every API path awxctl depends on and reports each as ok, missing, denied
+or error. It sends GET requests only, unless --with-preview adds the schedule
+preview check, which is a POST that changes nothing. Run it against a new controller version before trusting
 awxctl there, or when a command fails in a way that looks like an API change.
 
 Exit 0 if every check is ok, 1 otherwise. "denied" usually means the token may not
@@ -315,8 +316,8 @@ see that kind, not that the API changed.`,
 				return
 			}
 			path := core.FindResource(kind).Path + fmt.Sprint(core.ID(o)) + suffix
-			var any any
-			add(check, path, client.GetAny(ctx, path, &any), "")
+			var body interface{}
+			add(check, path, client.GetAny(ctx, path, &body), "")
 		}
 		sub("job output", "jobs", "/stdout/?format=json&content_format=txt&start_line=0&end_line=1")
 		sub("job events", "jobs", "/job_events/?page_size=1")
@@ -341,11 +342,15 @@ see that kind, not that the API changed.`,
 		sub("project playbooks", "projects", "/playbooks/")
 		sub("project inventory files", "projects", "/inventories/")
 		sub("group hosts", "groups", "/all_hosts/?page_size=1")
-		var any any
-		add("all runs", "/unified_jobs/", client.GetAny(ctx, "/unified_jobs/?page_size=1", &any), "")
-		add("all templates", "/unified_job_templates/", client.GetAny(ctx, "/unified_job_templates/?page_size=1", &any), "")
-		_, _, err = client.SchedulePreview(ctx, "DTSTART:20300101T000000Z RRULE:FREQ=DAILY;INTERVAL=1;COUNT=1")
-		add("schedule preview", "/schedules/preview/", err, "")
+		var body interface{}
+		add("all runs", "/unified_jobs/", client.GetAny(ctx, "/unified_jobs/?page_size=1", &body), "")
+		add("all templates", "/unified_job_templates/", client.GetAny(ctx, "/unified_job_templates/?page_size=1", &body), "")
+		if preview, _ := cmd.Flags().GetBool("with-preview"); preview {
+			_, _, err = client.SchedulePreview(ctx, "DTSTART:20300101T000000Z RRULE:FREQ=DAILY;INTERVAL=1;COUNT=1")
+			add("schedule preview", "/schedules/preview/", err, "")
+		} else {
+			rows = append(rows, map[string]any{"check": "schedule preview", "path": "/schedules/preview/", "status": "skipped", "detail": "it is a POST (that changes nothing): add --with-preview to include it"})
+		}
 
 		outFmt := output.Format(flagOutput)
 		if err := output.Print(outFmt, []output.Column{{Key: "check", Header: "CHECK"}, {Key: "status", Header: "STATUS"}, {Key: "path", Header: "PATH"}, {Key: "detail", Header: "DETAIL"}}, rows); err != nil {
@@ -385,5 +390,6 @@ func init() {
 	hostOutputCmd.Flags().Int("head", 0, "only the first N lines")
 	hostOutputCmd.Flags().Bool("text", false, "print only the text, not JSON")
 	getCmd.AddCommand(hostOutputCmd)
+	doctorCmd.Flags().Bool("with-preview", false, "also check the schedule preview (a POST that changes nothing; a read-scope token is refused)")
 	rootCmd.AddCommand(statsCmd, doctorCmd)
 }
