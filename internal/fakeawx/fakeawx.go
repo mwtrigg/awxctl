@@ -5,9 +5,12 @@ package fakeawx
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -30,6 +33,8 @@ type Server struct {
 	Version string
 
 	mu       sync.Mutex
+	store    map[string][]map[string]any // collection path under the prefix -> objects
+	nextID   int
 	requests []Request
 	fail     map[string][]int // path -> statuses to answer with first, one per request
 	handlers map[string]http.HandlerFunc
@@ -108,6 +113,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		h(w, r)
 		return
 	}
+	if s.serveStore(w, r, body) {
+		return
+	}
 	if r.URL.Path == s.Prefix+"/me/" {
 		JSON(w, http.StatusOK, map[string]any{"count": 1, "results": []map[string]any{
 			{"id": 1, "username": "admin", "is_superuser": true, "is_system_auditor": false},
@@ -115,4 +123,126 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	JSON(w, http.StatusNotFound, map[string]any{"detail": "Not found."})
+}
+
+// Add puts an object into a collection ("/hosts/") and returns it with its ID. A
+// collection that has objects is served generically: list with exact-match
+// filters and paging, get, create, patch and delete.
+func (s *Server) Add(collection string, obj map[string]any) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil {
+		s.store = map[string][]map[string]any{}
+	}
+	if obj["id"] == nil {
+		s.nextID++
+		obj["id"] = s.nextID
+	} else if id, _ := obj["id"].(int); id > s.nextID {
+		s.nextID = id
+	}
+	s.store[collection] = append(s.store[collection], obj)
+	return obj
+}
+
+// Collection returns a copy of the objects of a collection.
+func (s *Server) Collection(collection string) []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]map[string]any(nil), s.store[collection]...)
+}
+
+func (s *Server) serveStore(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	rel := strings.TrimPrefix(r.URL.Path, s.Prefix)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if objs, ok := s.store[rel]; ok {
+		switch r.Method {
+		case http.MethodGet:
+			var match []map[string]any
+			for _, o := range objs {
+				keep := true
+				for k, vals := range r.URL.Query() {
+					if k == "page" || k == "page_size" || k == "order_by" || strings.Contains(k, "__") { // lookups are not modelled
+						continue
+					}
+					if fmt.Sprint(o[k]) != vals[0] {
+						keep = false
+					}
+				}
+				if keep {
+					match = append(match, o)
+				}
+			}
+			sort.SliceStable(match, func(i, j int) bool { return match[i]["id"].(int) < match[j]["id"].(int) })
+			size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+			if size <= 0 {
+				size = 25
+			}
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			if page <= 0 {
+				page = 1
+			}
+			start, end := min((page-1)*size, len(match)), min(page*size, len(match))
+			var next any
+			if end < len(match) {
+				q := r.URL.Query()
+				q.Set("page", strconv.Itoa(page+1))
+				next = r.URL.Path + "?" + q.Encode()
+			}
+			results := match[start:end]
+			if results == nil {
+				results = []map[string]any{}
+			}
+			JSON(w, http.StatusOK, map[string]any{"count": len(match), "next": next, "results": results})
+		case http.MethodPost:
+			var obj map[string]any
+			if json.Unmarshal(body, &obj) != nil {
+				JSON(w, http.StatusBadRequest, map[string]any{"detail": "bad JSON"})
+				return true
+			}
+			s.nextID++
+			obj["id"] = s.nextID
+			s.store[rel] = append(s.store[rel], obj)
+			JSON(w, http.StatusCreated, obj)
+		default:
+			JSON(w, http.StatusMethodNotAllowed, map[string]any{"detail": "Method not allowed."})
+		}
+		return true
+	}
+	// an item: /collection/<id>/
+	trim := strings.TrimSuffix(rel, "/")
+	cut := strings.LastIndex(trim, "/")
+	if cut < 0 {
+		return false
+	}
+	coll, idText := trim[:cut+1], trim[cut+1:]
+	id, err := strconv.Atoi(idText)
+	objs, ok := s.store[coll]
+	if err != nil || !ok {
+		return false
+	}
+	for i, o := range objs {
+		if o["id"] != id {
+			continue
+		}
+		switch r.Method {
+		case http.MethodGet:
+			JSON(w, http.StatusOK, o)
+		case http.MethodPatch, http.MethodPut:
+			var change map[string]any
+			_ = json.Unmarshal(body, &change)
+			for k, v := range change {
+				o[k] = v
+			}
+			JSON(w, http.StatusOK, o)
+		case http.MethodDelete:
+			s.store[coll] = append(objs[:i:i], objs[i+1:]...)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			JSON(w, http.StatusMethodNotAllowed, map[string]any{"detail": "Method not allowed."})
+		}
+		return true
+	}
+	JSON(w, http.StatusNotFound, map[string]any{"detail": "Not found."})
+	return true
 }

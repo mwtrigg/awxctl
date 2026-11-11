@@ -47,10 +47,23 @@ Settings: flags override AWXCTL_* environment variables, which override
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		if flagYes {
+			flagApply = true
+		}
+		if err := enforceMCPPolicy(cmd); err != nil {
+			return err
+		}
 		output.Raw = flagRaw
 		output.Field = flagField
 		output.Limit, output.Fetched = 0, 0
 		output.Command = strings.TrimPrefix(cmd.CommandPath(), "awxctl ")
+		if flagYes {
+			flagApply = true
+		}
+		if flagApply && flagDryRun {
+			return &usageError{"--apply and --dry-run contradict each other: use one"}
+		}
+
 		switch output.Format(flagOutput) {
 		case output.FormatJSON, output.FormatJSONL, output.FormatTable, output.FormatCSV:
 		default:
@@ -68,12 +81,14 @@ func classify(err error) int {
 	var fe *output.FieldError
 	var pe *config.PermissionError
 	var uo *core.OutcomeUnknownError
+	var amb *core.AmbiguousError
 	switch {
 	case errors.As(err, &uo):
 		return output.ExitUnknown
 	case errors.As(err, &pe), errors.Is(err, core.ErrDenied):
 		return output.ExitPermission
-	case errors.Is(err, config.ErrNotConfigured), errors.As(err, &ue), errors.As(err, &fe), isCobraUsage(err):
+	case errors.Is(err, config.ErrNotConfigured), errors.As(err, &ue), errors.As(err, &fe), isCobraUsage(err),
+		errors.Is(err, core.ErrUsage), errors.As(err, &amb):
 		return output.ExitUsage
 	case errors.Is(err, core.ErrNotFound):
 		return output.ExitNotFound
@@ -154,4 +169,10 @@ func init() {
 
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(versionCmd)
+}
+
+// cliPrintErr prints a structured error and returns the exit code to end with.
+func cliPrintErr(outFmt output.Format, msg string, code int) error {
+	output.PrintError(outFmt, msg, code)
+	return &cliErr{code: code}
 }

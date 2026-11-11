@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	"github.com/mwtrigg/awxctl/internal/fakeawx"
@@ -23,7 +24,13 @@ func runCLI(t *testing.T, env map[string]string, args ...string) (string, string
 	for k, v := range env {
 		t.Setenv(k, v)
 	}
-	rootCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+	for _, k := range []string{"AWXCTL_FROM_MCP", "AWXCTL_MCP_WRITES", "AWXCTL_STATE_DIR", "AWXCTL_BEFORE_STATE"} {
+		t.Setenv(k, "")
+	}
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	resetFlags(rootCmd)
 
 	oldOut, oldErr := os.Stdout, os.Stderr
 	outR, outW, _ := os.Pipe()
@@ -116,5 +123,23 @@ func TestVersion(t *testing.T) {
 	out, _, code := runCLI(t, nil, "version", "--field", "version")
 	if code != 0 || strings.TrimSpace(out) != "dev" {
 		t.Errorf("got %q, exit %d", out, code)
+	}
+}
+
+// resetFlags puts every flag of every command back to its default: the command
+// tree is reused between test runs.
+func resetFlags(c *cobra.Command) {
+	reset := func(f *pflag.Flag) {
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			_ = sv.Replace(nil)
+		} else {
+			_ = f.Value.Set(f.DefValue)
+		}
+		f.Changed = false
+	}
+	c.Flags().VisitAll(reset)
+	c.PersistentFlags().VisitAll(reset)
+	for _, sub := range c.Commands() {
+		resetFlags(sub)
 	}
 }

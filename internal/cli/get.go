@@ -1,0 +1,216 @@
+package cli
+
+import (
+	"fmt"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/mwtrigg/awxctl/internal/core"
+	"github.com/mwtrigg/awxctl/internal/output"
+)
+
+var getCmd = group(&cobra.Command{
+	Use:   "get",
+	Short: "Read objects: jobs, templates, inventories, hosts, projects, schedules, ...",
+	Long: `Read objects from the controller. Every kind takes the same flags:
+
+  awxctl get jobs --failed --since 24h
+  awxctl get hosts --inventory lab --name web
+  awxctl get job-templates "Deploy app"        # one object, by name or ID (id:12)
+
+--filter passes any API filter through (repeatable), for example
+--filter status=failed --filter name__icontains=patch.`,
+})
+
+var (
+	getFilters []string
+	getSearch  string
+	getName    string
+	getSince   string
+	getUntil   string
+	getFailed  bool
+	getLimit   int
+	getOrder   string
+	getWide    bool
+)
+
+// columns returns the output columns of a resource; wide fields only when asked.
+func columns(r *core.Resource, wide bool) []output.Column {
+	var cols []output.Column
+	for _, fd := range r.Fields {
+		if fd.Wide && !wide {
+			continue
+		}
+		cols = append(cols, output.Column{Key: fd.Key, Header: fd.Header})
+	}
+	return cols
+}
+
+// parseWhen reads a relative time ("30m", "24h", "7d", "2w": that long ago) or an
+// absolute one (RFC 3339, or a date) and returns it as the API wants it.
+func parseWhen(s string, now time.Time) (string, error) {
+	s = strings.TrimSpace(s)
+	if n := len(s); n > 1 {
+		if v, err := strconv.ParseFloat(s[:n-1], 64); err == nil && v >= 0 {
+			unit := map[byte]time.Duration{'s': time.Second, 'm': time.Minute, 'h': time.Hour, 'd': 24 * time.Hour, 'w': 7 * 24 * time.Hour}[s[n-1]]
+			if unit != 0 {
+				return now.Add(-time.Duration(v * float64(unit))).UTC().Format(time.RFC3339), nil
+			}
+		}
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format(time.RFC3339), nil
+		}
+	}
+	return "", &usageError{fmt.Sprintf("cannot read the time %q: use 30m, 24h, 7d, a date (2026-01-31) or RFC 3339", s)}
+}
+
+// listQuery builds the API query of a list command from the common flags.
+func listQuery(cmd *cobra.Command, r *core.Resource) (url.Values, error) {
+	q := url.Values{}
+	for _, kv := range getFilters {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, &usageError{fmt.Sprintf("--filter wants KEY=VALUE, got %q", kv)}
+		}
+		if k == "page" || k == "page_size" || k == "format" {
+			return nil, &usageError{"--filter " + k + " is not a filter: use --limit"}
+		}
+		q.Add(k, v)
+	}
+	for flag, param := range r.Filters {
+		if fl := cmd.Flags().Lookup(flag); fl != nil && fl.Changed {
+			q.Set(param, fl.Value.String())
+		}
+	}
+	if getSearch != "" {
+		q.Set("search", getSearch)
+	}
+	if getName != "" {
+		if r.NameField == "" {
+			q.Set("name__icontains", getName)
+		} else {
+			q.Set(r.NameField+"__icontains", getName)
+		}
+	}
+	if getFailed {
+		q.Set("failed", "true")
+	}
+	for flag, op := range map[string]string{"since": "__gte", "until": "__lte"} {
+		val := map[string]string{"since": getSince, "until": getUntil}[flag]
+		if val == "" {
+			continue
+		}
+		if r.TimeField == "" {
+			return nil, &usageError{fmt.Sprintf("--%s does not apply to %s", flag, r.Kind)}
+		}
+		t, err := parseWhen(val, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		q.Set(r.TimeField+op, t)
+	}
+	order := r.Order
+	if getOrder != "" {
+		order = getOrder
+	}
+	if order != "" {
+		q.Set("order_by", order)
+	}
+	return q, nil
+}
+
+// effectiveLimit resolves --limit: unset = the context default, -1 = everything.
+func effectiveLimit(cmd *cobra.Command, def int) int {
+	if !cmd.Flags().Changed("limit") {
+		return def
+	}
+	if getLimit < 0 {
+		return 0
+	}
+	return getLimit
+}
+
+func runGet(r *core.Resource) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		ctx, _, client, err := connect()
+		if err != nil {
+			return err
+		}
+		outFmt := output.Format(flagOutput)
+		if len(args) == 1 { // one object: every field
+			extra := url.Values{}
+			if r.Scope != "" {
+				if fl := cmd.Flags().Lookup(r.Scope); fl != nil && fl.Changed {
+					extra.Set(r.Filters[r.Scope], fl.Value.String())
+				}
+			}
+			o, err := client.Resolve(cmd.Context(), r, args[0], extra)
+			if err != nil {
+				return err
+			}
+			return output.Print(outFmt, columns(r, true), []map[string]any{r.Row(o)})
+		}
+		q, err := listQuery(cmd, r)
+		if err != nil {
+			return err
+		}
+		limit := effectiveLimit(cmd, ctx.DefaultLimit)
+		objs, total, err := client.List(cmd.Context(), r.Path, q, limit)
+		if err != nil {
+			return err
+		}
+		rows := make([]map[string]any, len(objs))
+		for i, o := range objs {
+			rows[i] = r.Row(o)
+		}
+		output.Limit = limit
+		if total > len(rows) {
+			output.Fetched = limit // there are more than were read
+		}
+		return output.Print(outFmt, columns(r, getWide || outFmt != output.FormatTable), rows)
+	}
+}
+
+func addListFlags(c *cobra.Command) {
+	c.Flags().StringArrayVar(&getFilters, "filter", nil, "API filter KEY=VALUE, passed through (repeatable), e.g. status=failed or name__icontains=web")
+	c.Flags().StringVar(&getSearch, "search", "", "free-text search, as in the web UI")
+	c.Flags().StringVar(&getName, "name", "", "name contains this text (case-insensitive)")
+	c.Flags().IntVar(&getLimit, "limit", 0, "most rows to return (default: the context's default_limit, 100); -1 = all")
+	c.Flags().StringVar(&getOrder, "order", "", "sort field, prefix - for descending, e.g. -finished")
+	c.Flags().BoolVar(&getWide, "wide", false, "show every field in table output (JSON always has them)")
+}
+
+func init() {
+	for _, r := range core.Resources() {
+		c := &cobra.Command{
+			Use:     r.Kind + " [name-or-id]",
+			Aliases: r.Aliases,
+			Short:   "List " + r.Kind + ", or show one " + r.Singular,
+			Args:    cobra.MaximumNArgs(1),
+			RunE:    runGet(r),
+		}
+		addListFlags(c)
+		if r.TimeField != "" {
+			c.Flags().StringVar(&getSince, "since", "", "only those newer than this: 30m, 24h, 7d, a date or RFC 3339")
+			c.Flags().StringVar(&getUntil, "until", "", "only those older than this (same forms as --since)")
+			c.Flags().BoolVar(&getFailed, "failed", false, "only those that failed")
+		}
+		flags := make([]string, 0, len(r.Filters))
+		for flag := range r.Filters {
+			flags = append(flags, flag)
+		}
+		sort.Strings(flags)
+		for _, flag := range flags {
+			c.Flags().String(flag, "", "only those whose "+strings.ReplaceAll(flag, "-", " ")+" is this (exact)")
+		}
+		getCmd.AddCommand(c)
+	}
+	rootCmd.AddCommand(getCmd)
+}

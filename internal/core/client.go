@@ -215,7 +215,9 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("Accept", "application/json")
+	if _, text := out.(*rawText); !text {
+		req.Header.Set("Accept", "application/json")
+	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -239,6 +241,10 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if out == nil || len(data) == 0 {
+			return false, nil
+		}
+		if t, ok := out.(*rawText); ok { // plain text (job output)
+			*t = rawText(data)
 			return false, nil
 		}
 		if err := json.Unmarshal(data, out); err != nil {

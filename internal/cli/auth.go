@@ -6,10 +6,10 @@ import (
 	"github.com/mwtrigg/awxctl/internal/output"
 )
 
-var authCmd = &cobra.Command{
+var authCmd = group(&cobra.Command{
 	Use:   "auth",
 	Short: "Check the connection and credentials",
-}
+})
 
 var authStatusCmd = &cobra.Command{
 	Use:   "status",
