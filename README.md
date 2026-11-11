@@ -12,14 +12,27 @@ awxctl diagnose job 1234                         # why did it fail, in one call
 awxctl get jobs --failed --since 24h --group-by template
 awxctl get job-output 1234 --grep 'fatal|FAILED' --context 3
 awxctl get host-jobs web1 --failed
+awxctl get host-output web1 --template "Patch servers"   # only this host's part of the last run
+awxctl stats jobs --since 30d                    # runs, failure rate, runtimes per template
 awxctl launch "Patch servers" --limit web1       # dry run: shows what would be sent
 awxctl launch "Patch servers" --limit web1 --apply --wait
 ```
 
 ## Supported controllers
 
-- AWX (API under `/api/v2`)
-- AAP 2.5 and newer through the platform gateway (controller API under `/api/controller/v2`)
+| Product | Version | Controller API | Identity and access | Status |
+|---|---|---|---|---|
+| AWX | 24.6 | `/api/v2` | controller | tested |
+| AAP | 2.7 (controller 4.8) | `/api/controller/v2` | platform gateway, `/api/gateway/v1` | tested, except running jobs |
+| AAP | 2.5, 2.6 | `/api/controller/v2` | platform gateway | same layout as 2.7; not tested |
+| AAP | 2.4 and older | `/api/v2` | controller | treated like AWX; not tested |
+
+"Tested" means the commands were run against a real instance of that version. The
+AAP instance used had no subscription, so launching and everything else that starts
+a job is tested on AWX only. A version that is not in the table may well work:
+`awxctl doctor` reads every API path awxctl depends on and reports what is missing
+or different, and says whether the version is a tested one. Run it first on a new
+version; the table is updated when a version has been checked.
 
 awxctl reads the API index (`/api/`) to find out which one it is talking to and where
 its services are, so a moved prefix is followed, not guessed. Set `flavor: awx` or
@@ -104,7 +117,10 @@ About jobs:
 | `get job-output <id>` | the output, narrowed with `--tail`, `--head`, `--grep`/`--context`, saved with `--save`, streamed with `--follow --text` |
 | `get job-events <id>` | task results: `--failed`, `--changed`, `--host`, `--task` |
 | `get job-hosts <id>` | per-host counts (ok, changed, failures, unreachable) |
-| `get host-jobs <host>` | the jobs that ran against a host, with the host's result in each |
+| `get host-jobs <host>` | the jobs that ran against a host, with the host's result and the job's runtime (`--template`, `--failed`, `--since`) |
+| `get host-output <host>` | one host's part of a job's output: the last job, the last of `--template`, or `--job` |
+| `stats jobs` | runs, failure rate and runtimes (min, average, median, p95, max) per template, day, status, ... |
+| `stats hosts --inventory <inv>` | per host: jobs, failures, unreachable, last job |
 | `get workflow-nodes <id>` | the jobs a workflow started (`--template` for a workflow template) |
 | `get launch-info <template>` | what a template prompts for, its defaults and survey questions |
 | `wait <id>` | block until it ends; exit 0 only if successful |

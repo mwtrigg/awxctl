@@ -176,7 +176,7 @@ func TestDryRunSendsNothing(t *testing.T) {
 			t.Errorf("no dry-run case for the changing command %q", name)
 		}
 	}
-	read := map[string]bool{"auth": true, "get": true, "diagnose": true, "wait": true, "context": true, "state": true, "api": true, "llm": true, "mcp": true, "version": true, "help": true, "completion": true}
+	read := map[string]bool{"stats": true, "doctor": true, "auth": true, "get": true, "diagnose": true, "wait": true, "context": true, "state": true, "api": true, "llm": true, "mcp": true, "version": true, "help": true, "completion": true}
 	for _, c := range rootCmd.Commands() {
 		if !writeCommands[c.Name()] && !read[c.Name()] {
 			t.Errorf("command %q is neither in writeCommands nor known as read-only", c.Name())
@@ -385,5 +385,33 @@ func TestLaunchAllowlist(t *testing.T) {
 	}
 	if allowed(listed, patch) != nil {
 		t.Error("over MCP a listed template is allowed")
+	}
+}
+
+func TestDoctorReportsWhatIsMissing(t *testing.T) {
+	// The bare fake serves only a few paths: doctor must say so and exit 1,
+	// and it must only read.
+	srv, env := lab(t, "aap", "readonly")
+	out, errOut, code := runCLI(t, env, "doctor", "-o", "jsonl")
+	if code != 1 || !strings.Contains(errOut, "checks are not ok") {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	status := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var row struct{ Check, Status, Detail string }
+		if json.Unmarshal([]byte(line), &row) == nil {
+			status[row.Check] = row.Status
+		}
+	}
+	if status["list hosts"] != "ok" || status["list credentials"] != "missing" || status["host facts"] != "missing" || status["who am I"] != "ok" {
+		t.Errorf("statuses: hosts=%s credentials=%s facts=%s me=%s", status["list hosts"], status["list credentials"], status["host facts"], status["who am I"])
+	}
+	if !strings.Contains(out, "aap, controller 4.6.2") || !strings.Contains(out, "NOT a version awxctl is tested with") {
+		t.Errorf("the version verdict is missing:\n%s", strings.SplitN(out, "\n", 2)[0])
+	}
+	for _, r := range changing(srv) {
+		if !strings.HasSuffix(r.Path, "/schedules/preview/") {
+			t.Errorf("doctor must only read: %s %s", r.Method, r.Path)
+		}
 	}
 }

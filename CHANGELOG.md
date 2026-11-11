@@ -21,3 +21,6 @@ First working command set (no release yet).
   `attach`/`detach`.
 - Workflow editing from a file (`get workflow-graph`, `set workflow-graph`).
 - Users, teams and organizations are read-only.
+- `stats jobs`, `stats hosts`, `get host-output`, runtime and template on
+  `get host-jobs` rows.
+- `doctor`: checks a controller for everything awxctl uses.

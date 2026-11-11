@@ -222,7 +222,8 @@ var HostSummaryFields = []Field{
 	ff("host", "HOST", "host_name"), f("failed", "FAILED"), f("ok", "OK"), f("changed", "CHANGED"), f("failures", "FAILURES"),
 	ff("unreachable", "UNREACHABLE", "dark"), f("skipped", "SKIPPED"), f("rescued", "RESCUED"), f("ignored", "IGNORED"),
 	ff("job_id", "JOB", "summary_fields.job.id"), ff("job_name", "JOB NAME", "summary_fields.job.name"),
-	ff("job_status", "JOB STATUS", "summary_fields.job.status"), wf("job_template", "summary_fields.job.job_template_name"), w("created"),
+	ff("job_status", "JOB STATUS", "summary_fields.job.status"), ff("job_template", "TEMPLATE", "summary_fields.job.job_template_name"),
+	ff("job_seconds", "JOB S", "summary_fields.job.elapsed"), w("created"),
 }
 
 // Diagnosis is the answer to "why did this run fail".

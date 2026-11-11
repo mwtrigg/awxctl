@@ -242,6 +242,9 @@ var hostJobsCmd = &cobra.Command{
 		if getFailed {
 			q.Set("failed", "true")
 		}
+		if tmpl, _ := cmd.Flags().GetString("template"); tmpl != "" {
+			q.Set("job__job_template__name", tmpl)
+		}
 		if getSince != "" {
 			t, err := parseWhen(getSince, time.Now())
 			if err != nil {
@@ -263,7 +266,7 @@ var hostJobsCmd = &cobra.Command{
 		if total > len(rows) {
 			output.Fetched = limit
 		}
-		cols := []output.Column{{Key: "job_id", Header: "JOB"}, {Key: "job_name", Header: "NAME"}, {Key: "job_status", Header: "JOB STATUS"}, {Key: "failed", Header: "HOST FAILED"},
+		cols := []output.Column{{Key: "job_id", Header: "JOB"}, {Key: "job_name", Header: "NAME"}, {Key: "job_template", Header: "TEMPLATE"}, {Key: "job_status", Header: "JOB STATUS"}, {Key: "job_seconds", Header: "JOB S"}, {Key: "failed", Header: "HOST FAILED"},
 			{Key: "ok", Header: "OK"}, {Key: "changed", Header: "CHANGED"}, {Key: "failures", Header: "FAILURES"}, {Key: "unreachable", Header: "UNREACHABLE"}, {Key: "created", Header: "WHEN"}}
 		return output.Print(output.Format(flagOutput), cols, rows)
 	},
@@ -501,6 +504,7 @@ func init() {
 	jobEventsCmd.Flags().BoolVar(&getWide, "wide", false, "show every field in table output")
 
 	hostJobsCmd.Flags().String("inventory", "", "the host's inventory, when the name exists in more than one")
+	hostJobsCmd.Flags().String("template", "", "only jobs of this job template")
 	hostJobsCmd.Flags().BoolVar(&getFailed, "failed", false, "only jobs in which this host failed")
 	hostJobsCmd.Flags().StringVar(&getSince, "since", "", "only jobs newer than this: 30m, 24h, 7d, a date or RFC 3339")
 	hostJobsCmd.Flags().IntVar(&getLimit, "limit", 0, "most rows to return; -1 = all")

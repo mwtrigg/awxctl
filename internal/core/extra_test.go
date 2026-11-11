@@ -322,3 +322,63 @@ func TestCopyAndSchedulePreview(t *testing.T) {
 		t.Errorf("preview: %v %v %v", utc, local, err)
 	}
 }
+
+func TestGroupRuns(t *testing.T) {
+	rows := []map[string]any{ // newest first
+		{"id": 9, "template": "Patch", "status": "failed", "elapsed": 30.0, "started": "2030-01-03T10:00:00Z"},
+		{"id": 8, "template": "Patch", "status": "successful", "elapsed": 10.0, "started": "2030-01-02T10:00:00Z"},
+		{"id": 7, "template": "Patch", "status": "successful", "elapsed": 20.0, "started": "2030-01-02T09:00:00Z"},
+		{"id": 6, "template": "Patch", "status": "running", "elapsed": 99.0, "started": "2030-01-02T08:00:00Z"},
+		{"id": 5, "template": "Patch", "status": "canceled", "elapsed": 500.0, "started": "2030-01-01T08:00:00Z"},
+		{"id": 4, "template": nil, "status": "successful", "elapsed": 1.0, "started": "2030-01-01T07:00:00Z"},
+	}
+	g := GroupRuns(rows, "template")
+	if len(g) != 2 || g[0].Key != "Patch" || g[1].Key != "(none)" {
+		t.Fatalf("groups: %+v", g)
+	}
+	row := g[0].Row("template")
+	want := map[string]any{"runs": 5, "successful": 2, "failed": 1, "canceled": 1, "running": 1, "failure_rate": 0.333, "last_id": 9, "last_status": "failed",
+		"seconds_min": 10.0, "seconds_max": 30.0, "seconds_avg": 20.0, "seconds_median": 20.0, "seconds_p95": 30.0, "seconds_total": 60.0}
+	for k, v := range want {
+		if row[k] != v {
+			t.Errorf("%s = %v, want %v (running and canceled runs do not count as runtimes)", k, row[k], v)
+		}
+	}
+	days := GroupRuns(rows, "day")
+	if len(days) != 3 || days[0].Key != "2030-01-03" || days[1].Runs != 3 {
+		t.Errorf("by day, newest first: %+v %+v", days[0], days[1])
+	}
+}
+
+func TestHostOutputAndLatestJob(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Handle("/jobs/30/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("host_name") != "web1" {
+			t.Errorf("only this host's events must be asked for: %s", r.URL.RawQuery)
+		}
+		fakeawx.JSON(w, 200, map[string]any{"count": 4, "results": []map[string]any{
+			{"counter": 4, "event": "runner_on_start", "task": "Install", "play": "p", "stdout": ""},
+			{"counter": 5, "event": "runner_on_ok", "task": "Install", "play": "p", "stdout": "\x1b[0;32mok: [web1]\x1b[0m"},
+			{"counter": 8, "event": "runner_on_failed", "task": "Restart", "play": "p", "stdout": "fatal: [web1]: FAILED! => {\r\n    \"msg\": \"boom\"\r\n}"},
+		}})
+	})
+	text, tasks, err := c.HostOutput(context.Background(), 30, "web1", false)
+	want := "TASK [Install]\nok: [web1]\nTASK [Restart]\nfatal: [web1]: FAILED! => {\n    \"msg\": \"boom\"\n}\n"
+	if err != nil || tasks != 2 || text != want {
+		t.Errorf("host output (%d tasks, %v):\n%q\nwant\n%q", tasks, err, text, want)
+	}
+	srv.Handle("/hosts/5/job_host_summaries/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("job__job_template__name") == "Nope" {
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+			return
+		}
+		fakeawx.JSON(w, 200, map[string]any{"count": 1, "results": []map[string]any{{"summary_fields": map[string]any{"job": map[string]any{"id": 30}}}}})
+	})
+	host := Object{"id": 5, "name": "web1"}
+	if id, err := c.LatestHostJob(context.Background(), host, "Patch", false); err != nil || id != 30 {
+		t.Errorf("latest job: %d %v", id, err)
+	}
+	if _, err := c.LatestHostJob(context.Background(), host, "Nope", false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("no job of that template: %v", err)
+	}
+}
