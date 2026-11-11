@@ -30,7 +30,9 @@ type Context struct {
 	CAFile       string `yaml:"ca_file"`
 	Proxy        string `yaml:"proxy"`
 	DefaultLimit int    `yaml:"default_limit"` // default 100
-	Permissions  string `yaml:"permissions"`   // readonly | operator | write; default write
+	// Permissions is readonly, operator or write. Empty means readonly, and then
+	// AWXCTL_PERMISSIONS may set it; a tier written here can only be lowered by it.
+	Permissions string `yaml:"permissions"`
 	// AllowedTemplates is the allowlist for launching: job or workflow template names
 	// or "id:<n>". Empty means any template the token can launch; the MCP server only
 	// ever launches allowlisted templates.
@@ -211,7 +213,7 @@ func LoadConfig(contextOverride string) (*Config, *Context, error) {
 		} else {
 			// Named (by flag, environment or current_context) but not in the file: it
 			// must not fall back to an empty context that the environment then fills in.
-			return nil, nil, fmt.Errorf("context %q is not defined in the config file", ctxName)
+			return nil, nil, fmt.Errorf("%w: context %q is not defined in the config file", ErrNotConfigured, ctxName)
 		}
 	}
 	if err := ValidateTier(ctx.Permissions); err != nil {
@@ -319,7 +321,7 @@ func ActiveContextName(contextOverride string) (string, error) {
 	}
 	if name != "" {
 		if _, ok := cfg.Contexts[name]; !ok {
-			return "", fmt.Errorf("context %q is not defined in the config file", name)
+			return "", fmt.Errorf("%w: context %q is not defined in the config file", ErrNotConfigured, name)
 		}
 	}
 	return name, nil

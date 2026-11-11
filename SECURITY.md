@@ -33,7 +33,9 @@ the roles of the token's user and the token's scope. Recommended:
 
 - a separate token per use; for agents that only look, a read-scope token for a user with only the
   auditor role;
-- `permissions: readonly` (the default when nothing is set) on contexts an agent uses;
+- `permissions: readonly` written out on contexts an agent uses. A context with no `permissions` line is
+  readonly too, but then `AWXCTL_PERMISSIONS` in the environment (for example in an MCP client's `env`
+  block) sets its tier; a tier that is written in the config can only be lowered by the environment;
 - an `allowed_templates` list on any context an agent may launch from (over MCP nothing can be launched
   without one, and templates, projects, schedules and credentials are read-only there so the list cannot
   be sidestepped; an agent with a shell and a write-tier context is limited only by its token);

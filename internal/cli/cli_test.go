@@ -84,7 +84,7 @@ func TestExitCodes(t *testing.T) {
 		{"not configured", nil, []string{"auth", "status"}, 5, "usage"},
 		{"bad token", map[string]string{"AWXCTL_URL": srv.URL, "AWXCTL_API_TOKEN": "nope", "AWXCTL_INSECURE": "1"}, []string{"auth", "status"}, 3, "auth"},
 		{"untrusted certificate", map[string]string{"AWXCTL_URL": srv.URL, "AWXCTL_API_TOKEN": fakeawx.Token}, []string{"auth", "status"}, 4, "connection"},
-		{"unknown context", good, []string{"auth", "status", "-c", "nope"}, 1, ""},
+		{"unknown context", good, []string{"auth", "status", "-c", "nope"}, 5, "usage"},
 		{"unknown flag", good, []string{"auth", "status", "--nope"}, 5, "usage"},
 		{"unknown format", good, []string{"version", "-o", "xml"}, 5, "usage"},
 		{"bad flavor", map[string]string{"AWXCTL_URL": srv.URL, "AWXCTL_FLAVOR": "tower"}, []string{"auth", "status"}, 5, "usage"},

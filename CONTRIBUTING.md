@@ -13,6 +13,11 @@ Tests run against a fake controller (`internal/fakeawx`, both the AWX and the AA
 controller is needed. If you have a sandbox, try your change there too, on both flavors if you can, but
 never against production with a token that can write.
 
+## How changes get in
+
+While a repository is private, pull requests are not needed: changes are signed commits straight to
+`main`. Once it is public, pull requests (and Dependabot's) are the way in.
+
 ## Ground rules
 
 - **Layers.** `internal/core` talks to the API and returns data; it never prints. `internal/cli` is flags
@@ -47,7 +52,9 @@ rest of the project.
 
 ## Releasing (maintainers)
 
-Releases are built and signed by `.github/workflows/release.yml` when a `v*` tag is pushed.
+Releases are built and signed by `.github/workflows/release.yml` when a `v*` tag is pushed. The release
+job runs GoReleaser and the release-notes script from the tagged commit next to the signing key, so
+anyone who can push to `main` and create a tag can use the key: keep write access small.
 One-time repository setup that the workflow relies on:
 
 - A `release` environment holding the `AWXCTL_SIGNING_KEY` secret (an ed25519 SSH key; the

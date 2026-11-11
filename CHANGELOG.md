@@ -35,6 +35,10 @@ are taken from this file (`scripts/release-notes.sh`).
 - `meta.total` is present when nothing matches; `--limit 0` is refused; a misspelt `mode` is refused; a build
   from a commit after a release is not "upgraded" back to that release; an `http://` url gets a warning.
 - MCP results start with a line marking them as data from the controller.
+- A context that is not defined exits 5 (it exited 1).
+- Docs: an Install section; what `AWXCTL_PERMISSIONS` does exactly (it sets the tier of a context that has no
+  `permissions` line, and can only lower one that has); what counts as secret-looking; what the MCP server
+  offers.
 
 ### Changed
 - `diagnose job` lists each distinct failure once, with the hosts it hit (hosts that failed the same task

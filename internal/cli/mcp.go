@@ -321,7 +321,7 @@ child process, so the tools behave exactly like the commands.
     labels can be changed.
   - Workflow approvals can only be answered with --allow-approvals.
   - Never offered: ad hoc commands, the raw api command, tokens, contexts,
-    upgrade, and flags that read or write local files.
+    upgrade, wait, and flags that read or write local files.
 
 These are guardrails, not a security boundary: give the context a token that can
 only do what the agent should be able to do.`,

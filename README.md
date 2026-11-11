@@ -4,8 +4,8 @@ A command-line tool for the AWX and Ansible Automation Platform (AAP) controller
 built for agents and operators: one static binary, JSON by default, structured errors,
 and safe by default (nothing changes without `--apply`).
 
-**Status: early.** The command set below works and is tested against AWX 24.6 and
-AAP 2.7. Releases are signed; the repository is private for now.
+**Status: early (0.x).** The command set below works and is tested against AWX 24.6 and
+AAP 2.7; commands and JSON shapes can still change between releases. Releases are signed.
 
 ```
 awxctl diagnose job 1234                         # why did it fail, in one call
@@ -17,6 +17,23 @@ awxctl stats jobs --since 7d                     # runs, failure rate, runtimes 
 awxctl launch "Patch servers" --limit web1       # dry run: shows what would be sent
 awxctl launch "Patch servers" --limit web1 --apply --wait
 ```
+
+## Install
+
+**From a release** (Linux, macOS, Windows; amd64 and arm64): download the archive for your
+platform from the [Releases](../../releases) page, check it (see
+[Releases and upgrade](#releases-and-upgrade)), and put `awxctl` on your `PATH`. Each archive
+also holds the license and the third-party notices.
+
+**From source** (Go 1.26 or newer):
+
+```sh
+git clone https://github.com/mwtrigg/awxctl
+cd awxctl
+make build            # or: CGO_ENABLED=0 go build -o awxctl ./cmd/awxctl
+```
+
+Then create the config file below and run `awxctl auth status`.
 
 ## Supported controllers
 
@@ -57,7 +74,8 @@ contexts:
   lab:
     url: https://awx.example.com
     api_token: "<token>"
-    permissions: readonly          # readonly (default) | operator | write
+    permissions: readonly          # readonly | operator | write. Write this line: without it the
+                                   # tier is readonly, but AWXCTL_PERMISSIONS in the environment can set it
     # ca_file: /path/to/ca.pem     # private or self-signed controller
     # flavor: auto                 # auto | awx | aap
     # mode: dry-run                # dry-run (default) | apply
@@ -74,7 +92,7 @@ contexts:
 | `AWXCTL_CA_FILE` | CA certificate (PEM) |
 | `AWXCTL_INSECURE` | `1` disables TLS verification |
 | `AWXCTL_FLAVOR` | `awx`, `aap` or `auto` |
-| `AWXCTL_PERMISSIONS` | lower the context's tier (it can never raise it) |
+| `AWXCTL_PERMISSIONS` | the tier of a context that has no `permissions` line; on a context that has one it can lower the tier but never raise it |
 | `AWXCTL_MODE` | `dry-run` or `apply` |
 | `AWXCTL_STATE_DIR`, `AWXCTL_STATE_KEEP`, `AWXCTL_BEFORE_STATE` | audit records: where, how many, on/off |
 
@@ -233,7 +251,10 @@ written, nothing is sent. A change whose outcome is unknown (timeout, 502) stops
 run with exit 7: check before retrying, awxctl never retries a change.
 
 Secrets: values of secret-looking fields are shown as `******` in all output and
-records, including inside `variables` and `extra_vars` text. Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
+records, including inside `variables` and `extra_vars` text. "Secret-looking" goes by the name:
+it contains `pass`, `pwd`, `secret`, `token`, `private`, `vault`, `authorize`, `api_key` or
+`become_`, or has `key` or `pw` as a whole word between underscores (`ssh_key`, `db_pw`), or is
+`inputs`. A secret under another name is not recognised. Give secrets with `--set-file FIELD=PATH` or `--extra-vars-file` (`-` reads
 stdin), not on the command line.
 
 ## For agents
@@ -272,7 +293,7 @@ stdin), not on the command line.
 | 2 | not found |
 | 3 | authentication failed |
 | 4 | cannot reach the controller |
-| 5 | bad flags, arguments or configuration |
+| 5 | bad flags, arguments or configuration (also a context that is not defined) |
 | 6 | controller version not supported |
 | 7 | a change was sent but its outcome is unknown: check before retrying |
 | 8 | not permitted (permission tier, allowlist, or denied by the controller) |
@@ -300,7 +321,9 @@ Errors are printed to stderr as `{"error": "...", "kind": "...", "code": N}`.
 Releases are built by GitHub Actions from a `v*` tag. Every release has a `checksums.txt` and a
 signature of it, `checksums.txt.sig`, made with the project's release key
 ([`docs/release-signing-key.pub`](docs/release-signing-key.pub), fingerprint
-`SHA256:JcxegRoINrLo8XEppZs2uirJPaVY20R2BN0jtugTZTY`). To check a download by hand:
+`SHA256:JcxegRoINrLo8XEppZs2uirJPaVY20R2BN0jtugTZTY`). The key file is in the repository, not
+in the archives: fetch it from there, and compare its fingerprint (`ssh-keygen -lf`) with the one
+above. To check a download by hand:
 
 ```sh
 echo "awxctl-release $(cat docs/release-signing-key.pub)" > allowed_signers
@@ -311,8 +334,8 @@ sha256sum -c --ignore-missing checksums.txt
 `awxctl upgrade` does the same before it replaces itself: it downloads the latest release, verifies
 the signature against the key compiled into the binary and the archive against the signed checksums,
 never installs an older version, starts the new binary once and puts the old one back if it does not
-run. `awxctl upgrade --check` only looks. While the repository is private, `upgrade` cannot reach the
-releases (it sends no credentials); download the archive yourself and check it as above.
+run. `awxctl upgrade --check` only looks. `upgrade` sends no credentials: it works when the releases
+can be read without logging in. A build made from source after a release is never "upgraded" back to it.
 
 The license and the notices of the libraries awxctl is built with are in `LICENSE` and
 `THIRD_PARTY_NOTICES.md`, and travel in every release archive.
