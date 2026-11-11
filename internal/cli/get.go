@@ -156,7 +156,24 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 			if err != nil {
 				return err
 			}
-			return output.Print(outFmt, columns(r, true), []map[string]any{r.Row(o)})
+			row := r.Row(o)
+			cols := columns(r, true)
+			if r.Kind == "inventories" { // one inventory: say where its hosts come from
+				sources, err := client.InventorySources(cmd.Context(), o)
+				if err != nil {
+					return err
+				}
+				row["sources"] = sources
+				names := make([]string, len(sources))
+				for i, s := range sources {
+					names[i] = fmt.Sprintf("%v (%v)", s["name"], s["source"])
+				}
+				if outFmt == output.FormatTable {
+					row["sources"] = strings.Join(names, ", ")
+				}
+				cols = append(cols, output.Column{Key: "sources", Header: "SOURCES FROM"})
+			}
+			return output.Print(outFmt, cols, []map[string]any{row})
 		}
 		q, err := listQuery(cmd, r)
 		if err != nil {

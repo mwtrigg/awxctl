@@ -281,6 +281,24 @@ func (c *Client) MergedVars(ctx context.Context, host Object, showSecrets bool) 
 	return vars, sources, nil
 }
 
+// InventorySources lists where an inventory's hosts come from: each source with
+// its type, the project and file it reads (for a project source) and how its
+// last sync went. An inventory without sources is filled by hand or by the API.
+func (c *Client) InventorySources(ctx context.Context, inv Object) ([]map[string]any, error) {
+	list, _, err := c.List(ctx, "/inventories/"+idOf(inv)+"/inventory_sources/", url.Values{"order_by": {"name"}}, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, len(list))
+	for i, s := range list {
+		out[i] = map[string]any{"id": ID(s), "name": s["name"], "source": s["source"],
+			"source_project": Lookup(s, "summary_fields.source_project.name"), "source_path": s["source_path"],
+			"status": s["status"], "last_updated": s["last_updated"], "last_job_failed": s["last_job_failed"],
+			"update_on_launch": s["update_on_launch"], "overwrite": s["overwrite"]}
+	}
+	return out, nil
+}
+
 // ---- schedules ----
 
 // SchedulePreview asks the controller for the next runs of a recurrence rule. It

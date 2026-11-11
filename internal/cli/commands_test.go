@@ -447,3 +447,26 @@ func TestHostNameInSeveralInventories(t *testing.T) {
 		t.Errorf("meta.total: %s", out)
 	}
 }
+
+func TestOneInventoryShowsItsSources(t *testing.T) {
+	srv, env := lab(t, "aap", "readonly")
+	srv.Handle("/inventories/2/inventory_sources/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 1, "results": []map[string]any{{"id": 31, "name": "from git", "source": "scm", "source_path": "inventory/hosts.yml",
+			"status": "successful", "update_on_launch": true, "summary_fields": map[string]any{"source_project": map[string]any{"name": "infra"}}}}})
+	})
+	out, errOut, code := runCLI(t, env, "get", "inventories", "lab")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	for _, want := range []string{`"total_hosts": 2`, `"source": "scm"`, `"source_project": "infra"`, `"source_path": "inventory/hosts.yml"`, `"status": "successful"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s in:\n%s", want, out)
+		}
+	}
+	// the list stays one request and has no sources
+	before := len(srv.Requests())
+	out, _, _ = runCLI(t, env, "get", "inventories")
+	if strings.Contains(out, `"sources"`) || len(srv.Requests())-before > 3 {
+		t.Errorf("the list must not look up sources: %d requests", len(srv.Requests())-before)
+	}
+}

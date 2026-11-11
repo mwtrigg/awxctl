@@ -24,6 +24,7 @@ First working command set (no release yet).
 - `stats jobs`, `stats hosts`, `get host-output`, runtime and template on
   `get host-jobs` rows.
 - `doctor`: checks a controller for everything awxctl uses.
+- `get inventories <name>` lists the inventory's sources.
 - `meta.total` in list output; job output above the controller's display limit is
   downloaded; a host name shared by several inventories works in the read
   commands; numbers in API answers are kept exact (very large integers in task

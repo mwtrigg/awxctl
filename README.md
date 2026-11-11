@@ -129,6 +129,7 @@ About everything else:
 
 | Command | Answers |
 |---|---|
+| `get inventories <name>` | one inventory: host and group counts, its kind, and `sources`: where its hosts come from (type, project, file, last sync) |
 | `get host-facts <host>` | the facts last gathered for a host (`--fact ansible_distribution`) |
 | `get variables hosts\|groups\|inventories <name>` | its variables; `--merged` shows what a host ends up with and where each value comes from |
 | `get project-files <project>` | the playbooks and inventory files of a project |
