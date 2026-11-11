@@ -681,8 +681,16 @@ func TestFieldsAndTimeZone(t *testing.T) {
 		t.Errorf("a list leaves the variables out: %s", out)
 	}
 	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "-o", "jsonl")
-	if !strings.Contains(out, "variables") {
-		t.Errorf("one host shows its variables: %s", out)
+	if strings.Contains(out, "big") || !strings.Contains(out, `"variables_hint":"left out: awxctl get variables hosts \"id:9\"`) {
+		t.Errorf("one host: the variables are left out, with a pointer to get variables: %s", out)
+	}
+	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "--wide", "-o", "jsonl")
+	if !strings.Contains(out, "big") || strings.Contains(out, "variables_hint") {
+		t.Errorf("--wide shows them: %s", out)
+	}
+	out, _, _ = runCLI(t, env, "get", "hosts", "id:9", "-o", "table")
+	if strings.Contains(out, "VARIABLES") || strings.Contains(out, "big") {
+		t.Errorf("no variables column in the table: %s", out)
 	}
 	if _, errOut, code := runCLI(t, env, "get", "hosts", "--fields", "name,nope"); code != 5 || !strings.Contains(errOut, "available:") {
 		t.Errorf("an unknown field lists the fields: exit %d %s", code, errOut)

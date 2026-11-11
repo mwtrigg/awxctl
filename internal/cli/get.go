@@ -169,6 +169,19 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 			}
 			row := r.Row(o)
 			cols := columns(r, true)
+			// Variables can run to pages and are rarely what was asked: they have
+			// their own command. --wide still shows them here.
+			if _, has := row["variables"]; has && !getWide {
+				delete(row, "variables")
+				kept := cols[:0]
+				for _, c := range cols {
+					if c.Key != "variables" {
+						kept = append(kept, c)
+					}
+				}
+				cols = kept
+				row["variables_hint"] = "left out: awxctl get variables " + r.Kind + " " + strconv.Quote(args[0]) + " (hosts: add --merged)"
+			}
 			if r.Kind == "inventories" { // one inventory: say where its hosts come from
 				sources, err := client.InventorySources(cmd.Context(), o)
 				if err != nil {

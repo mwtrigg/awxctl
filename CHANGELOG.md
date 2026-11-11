@@ -5,6 +5,10 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+### Changed
+- `get hosts|groups|inventories <name>` no longer prints the object's variables (they can run to pages); a
+  `variables_hint` field points at `get variables`, and `--wide` still shows them.
+
 ## [0.3.0] - 2026-11-11
 
 From the first real use by an agent (14 calls and 60k characters to diagnose one job).
