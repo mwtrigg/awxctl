@@ -5,7 +5,11 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+### Added
+- `get jobs --host H` and `get unified-jobs --host H`: the runs a host took part in.
+
 ### Changed
+- `get job-templates --playbook` matches part of the playbook path (it was an exact match).
 - A value encrypted with Ansible Vault is shown as `<vaulted>` everywhere, whatever the variable is called
   and also with `--show-secrets` (a vault blob under a name that does not look secret used to print in full).
 - `get hosts|groups|inventories` never prints variables, in a list or for one object, with or without `--wide`

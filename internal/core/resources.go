@@ -76,10 +76,13 @@ var resources = []*Resource{
 			wf("execution_environment", "summary_fields.execution_environment.name"),
 			wf("template_id", "job_template"), wf("inventory_id", "inventory"), w("execution_node"),
 		),
-		Filters: map[string]string{"template": "job_template__name", "inventory": "inventory__name", "project": "project__name", "status": "status", "launched-by": "created_by__username"}},
+		// host: the jobs a host took part in, by the name it had in the run (it
+		// still matches after the host was renamed or removed).
+		Filters: map[string]string{"template": "job_template__name", "inventory": "inventory__name", "project": "project__name", "status": "status", "launched-by": "created_by__username",
+			"host": "job_host_summaries__host_name"}},
 	{Kind: "unified-jobs", JobLike: true, Singular: "unified job", Aliases: []string{"all-jobs"}, Path: "/unified_jobs/", Order: "-id", TimeField: "created",
 		Fields:  withJob(f("type", "TYPE"), wf("template", "summary_fields.unified_job_template.name")),
-		Filters: map[string]string{"status": "status", "type": "type", "template": "unified_job_template__name"}},
+		Filters: map[string]string{"status": "status", "type": "type", "template": "unified_job_template__name", "host": "job__job_host_summaries__host_name"}},
 	{Kind: "workflow-jobs", JobLike: true, Singular: "workflow job", Path: "/workflow_jobs/", Order: "-id", TimeField: "created",
 		Fields:  withJob(ff("template", "TEMPLATE", "summary_fields.workflow_job_template.name"), w("limit")),
 		Filters: map[string]string{"template": "workflow_job_template__name", "status": "status"}},
@@ -107,7 +110,8 @@ var resources = []*Resource{
 			w("ask_limit_on_launch"), w("ask_variables_on_launch"), w("ask_inventory_on_launch"), w("ask_tags_on_launch"),
 			w("ask_skip_tags_on_launch"), w("ask_job_type_on_launch"), w("ask_credential_on_launch"), w("ask_scm_branch_on_launch"),
 			w("allow_simultaneous"), w("become_enabled"), d("extra_vars")},
-		Filters: map[string]string{"organization": "organization__name", "inventory": "inventory__name", "project": "project__name", "playbook": "playbook"},
+		// playbook matches part of the path: "which templates run patch.yml".
+		Filters: map[string]string{"organization": "organization__name", "inventory": "inventory__name", "project": "project__name", "playbook": "playbook__icontains"},
 		Writable: []string{"name", "description", "job_type", "inventory", "project", "playbook", "organization", "limit", "job_tags", "skip_tags", "forks", "verbosity",
 			"extra_vars", "execution_environment", "become_enabled", "allow_simultaneous", "scm_branch", "timeout", "diff_mode",
 			"ask_limit_on_launch", "ask_variables_on_launch", "ask_inventory_on_launch", "ask_tags_on_launch", "ask_skip_tags_on_launch",

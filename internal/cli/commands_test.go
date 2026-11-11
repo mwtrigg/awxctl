@@ -735,3 +735,18 @@ func TestMCPGetChecksParametersPerKind(t *testing.T) {
 		t.Errorf("the description says which filters go with which kind: %s", get.Description[:200])
 	}
 }
+
+func TestFindJobsByHostAndTemplatesByPlaybook(t *testing.T) {
+	srv, env := lab(t, "aap", "readonly")
+	last := func() string { return srv.Requests()[len(srv.Requests())-1].Path }
+	if _, errOut, code := runCLI(t, env, "get", "jobs", "--host", "web1.example.com", "--since", "7d"); code != 0 || !strings.Contains(last(), "job_host_summaries__host_name=web1.example.com") {
+		t.Errorf("get jobs --host: exit %d %s %s", code, errOut, last())
+	}
+	if _, errOut, code := runCLI(t, env, "get", "job-templates", "--playbook", "patch.yml", "--project", "ops"); code != 0 || !strings.Contains(last(), "playbook__icontains=patch.yml") || !strings.Contains(last(), "project__name=ops") {
+		t.Errorf("get job-templates --playbook: exit %d %s %s", code, errOut, last())
+	}
+	out, _, _ := runCLI(t, env, "get", "job-templates", "--help")
+	if !strings.Contains(out, "playbook contains this") {
+		t.Errorf("the help says the playbook filter matches part of the path: %s", out)
+	}
+}

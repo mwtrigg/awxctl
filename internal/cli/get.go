@@ -311,7 +311,17 @@ func init() {
 		}
 		sort.Strings(flags)
 		for _, flag := range flags {
-			c.Flags().String(flag, "", "only those whose "+strings.ReplaceAll(flag, "-", " ")+" is this (exact)")
+			what := strings.ReplaceAll(flag, "-", " ")
+			switch {
+			case strings.HasSuffix(r.Filters[flag], "__icontains"):
+				c.Flags().String(flag, "", "only those whose "+what+" contains this")
+			case strings.HasSuffix(r.Filters[flag], "__in"):
+				c.Flags().String(flag, "", what+": one value or several, comma-separated")
+			case flag == "host":
+				c.Flags().String(flag, "", "only runs this host took part in (exact name)")
+			default:
+				c.Flags().String(flag, "", "only those whose "+what+" is this (exact)")
+			}
 		}
 		getCmd.AddCommand(c)
 	}

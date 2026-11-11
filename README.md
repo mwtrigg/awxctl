@@ -126,7 +126,7 @@ field. Kinds: `jobs`, `unified-jobs` (every run of any type), `workflow-jobs`,
 | `--tz ZONE` | show times in a zone (`America/New_York`, `local`; default UTC); also the zone of a `--since` written without one. `AWXCTL_TZ` sets it |
 | `--wide` | add the large fields a list leaves out (`extra_vars`, `changes`); one object always shows those. Variables of hosts, groups and inventories are never part of `get <kind>`: use `get variables` |
 | `--group-by FIELD` | count rows per value instead of listing them |
-| per kind | e.g. `--template`, `--inventory`, `--status`, `--project`, `--organization` |
+| per kind | e.g. `--template`, `--inventory`, `--status`, `--project`, `--organization`; `get jobs --host H` (runs a host took part in); `get job-templates --playbook patch.yml` (templates whose playbook path contains it) |
 
 Objects are addressed by name or ID. `id:12` and `name:12` force one reading; a name
 that matches several objects is an error that lists their IDs. Hosts and groups take
