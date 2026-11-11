@@ -5,6 +5,8 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Security
 - Over MCP the launch allowlist could be sidestepped: an agent could enable a schedule of a template that is
   not on the list, edit or rename templates, or change a project. Over MCP, templates, projects, schedules,
