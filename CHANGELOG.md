@@ -5,6 +5,8 @@ are taken from this file (`scripts/release-notes.sh`).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-11
+
 ### Added
 - `get jobs --host H` and `get unified-jobs --host H`: the runs a host took part in.
 
