@@ -6,6 +6,8 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-16
+
 The low-severity findings of the 2026-11-11 review.
 
 ### Changed
