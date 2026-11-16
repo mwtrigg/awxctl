@@ -100,7 +100,7 @@ contexts:
 | Variable | Meaning |
 |---|---|
 | `AWXCTL_CONTEXT` | context to use |
-| `AWXCTL_URL`, `AWXCTL_API_TOKEN` | controller URL and token |
+| `AWXCTL_URL`, `AWXCTL_API_TOKEN` | controller URL and token. `AWXCTL_URL` alone cannot point a context that keeps its token in the config file at another host: give the token for that host too |
 | `AWXCTL_USERNAME`, `AWXCTL_PASSWORD` | basic authentication, when no token is set |
 | `AWXCTL_CA_FILE` | CA certificate (PEM) |
 | `AWXCTL_INSECURE` | `1` disables TLS verification |
@@ -320,6 +320,7 @@ stdin), not on the command line.
 | 6 | controller version not supported |
 | 7 | a change was sent but its outcome is unknown: check before retrying |
 | 8 | not permitted (permission tier, allowlist, or denied by the controller) |
+| 9 | `--wait-timeout` ran out and the job is still running (it has not failed; it used to exit 1) |
 
 Errors are printed to stderr as `{"error": "...", "kind": "...", "code": N}`.
 

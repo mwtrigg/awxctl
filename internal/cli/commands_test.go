@@ -750,3 +750,17 @@ func TestFindJobsByHostAndTemplatesByPlaybook(t *testing.T) {
 		t.Errorf("the help says the playbook filter matches part of the path: %s", out)
 	}
 }
+
+func TestWaitTimeoutExitsNine(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/unified_jobs/", map[string]any{"id": 77, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 77, "name": "Long", "status": "running"})
+	_, errOut, code := runCLI(t, env, "wait", "77", "--wait-timeout", "80ms", "--poll", "10ms")
+	if code != 9 || !strings.Contains(errOut, `"kind":"still_running"`) || !strings.Contains(errOut, "still running") {
+		t.Errorf("a wait that ran out exits 9, not 1: exit %d %s", code, errOut)
+	}
+	// a job that really failed still exits 1
+	if _, _, code := runCLI(t, env, "wait", "12"); code != 1 {
+		t.Errorf("a failed job exits 1: %d", code)
+	}
+}

@@ -127,6 +127,8 @@ func classify(err error) int {
 	var uo *core.OutcomeUnknownError
 	var amb *core.AmbiguousError
 	switch {
+	case errors.Is(err, core.ErrWaitTimeout):
+		return output.ExitWaiting
 	case errors.As(err, &uo):
 		return output.ExitUnknown
 	case errors.Is(err, context.Canceled):

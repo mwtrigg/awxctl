@@ -73,6 +73,7 @@ func (c *Client) List(ctx context.Context, rel string, q url.Values, limit int) 
 	}
 	q.Set("page_size", strconv.Itoa(size))
 	next := c.abs(ctx, rel) + "?" + q.Encode()
+	seen := map[int]bool{}
 	for next != "" {
 		var page struct {
 			Count   int      `json:"count"`
@@ -83,7 +84,17 @@ func (c *Client) List(ctx context.Context, rel string, q url.Values, limit int) 
 			return nil, 0, err
 		}
 		total = page.Count
-		objs = append(objs, page.Results...)
+		// A list that grows while it is read (jobs, newest first) shifts its rows
+		// across pages: the same object can come twice. Each is kept once.
+		for _, o := range page.Results {
+			if id := asInt(o["id"]); id != 0 {
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+			}
+			objs = append(objs, o)
+		}
 		if limit > 0 && len(objs) >= limit {
 			return objs[:limit], total, nil
 		}
@@ -263,7 +274,7 @@ func (c *Client) ResolveAll(ctx context.Context, r *Resource, ref string, extra 
 		q[k] = v
 	}
 	q.Set(r.NameField, strings.TrimPrefix(ref, "name:"))
-	objs, _, err := c.List(ctx, r.Path, q, 50)
+	objs, _, err := c.List(ctx, r.Path, q, 0) // every match: a name can be in many inventories
 	return objs, err
 }
 

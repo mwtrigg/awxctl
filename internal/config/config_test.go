@@ -341,3 +341,38 @@ func TestAWXCTLPermissionsOnlyLowersAConfiguredTier(t *testing.T) {
 		t.Fatal("operator cannot write")
 	}
 }
+
+// AWXCTL_URL alone must not send a context's stored token to another host.
+func TestURLFromEnvironmentDoesNotCarryStoredCredentials(t *testing.T) {
+	const cfg = "current_context: lab\ncontexts:\n  lab:\n    url: https://awx.example.com\n    api_token: stored\n  bare:\n    url: https://awx.example.com\n"
+	for name, tc := range map[string]struct {
+		context string
+		env     map[string]string
+		ok      bool
+	}{
+		"another host, stored token":           {"lab", map[string]string{"AWXCTL_URL": "https://other.example.com"}, false},
+		"another host, token given too":        {"lab", map[string]string{"AWXCTL_URL": "https://other.example.com", "AWXCTL_API_TOKEN": "t"}, true},
+		"the same host":                        {"lab", map[string]string{"AWXCTL_URL": "https://awx.example.com/"}, true},
+		"a context that stores no credentials": {"bare", map[string]string{"AWXCTL_URL": "https://other.example.com"}, true},
+		"no variable":                          {"lab", nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeConfig(t, cfg)
+			for _, k := range []string{"AWXCTL_URL", "AWXCTL_API_TOKEN", "AWXCTL_USERNAME", "AWXCTL_PASSWORD", "AWXCTL_CONTEXT"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, ctx, err := LoadConfig(tc.context)
+			if tc.ok && err != nil {
+				t.Fatalf("must be accepted: %v", err)
+			}
+			if !tc.ok {
+				if err == nil || !strings.Contains(err.Error(), "AWXCTL_URL") {
+					t.Fatalf("must be refused, got url %v err %v", ctx, err)
+				}
+			}
+		})
+	}
+}

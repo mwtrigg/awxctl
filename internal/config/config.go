@@ -239,17 +239,27 @@ func LoadConfig(contextOverride string) (*Config, *Context, error) {
 			fmt.Fprintf(os.Stderr, "warning: AWXCTL_PERMISSIONS=%s is ignored: context %q is %s, and the environment can lower a tier but never raise it\n", v, ctxName, cur)
 		}
 	}
-	if v := os.Getenv("AWXCTL_URL"); v != "" {
+	urlFromEnv := false
+	if v := os.Getenv("AWXCTL_URL"); v != "" && strings.TrimRight(v, "/") != strings.TrimRight(ctx.URL, "/") {
+		urlFromEnv = ctx.URL != "" // the context has a url of its own and the environment points elsewhere
+		ctx.URL = v
+	} else if v != "" {
 		ctx.URL = v
 	}
+	storedToken, storedPassword := ctx.APIToken != "", ctx.Password != ""
 	if v := os.Getenv("AWXCTL_API_TOKEN"); v != "" {
-		ctx.APIToken = v
+		ctx.APIToken, storedToken = v, false
 	}
 	if v := os.Getenv("AWXCTL_USERNAME"); v != "" {
 		ctx.Username = v
 	}
 	if v := os.Getenv("AWXCTL_PASSWORD"); v != "" {
-		ctx.Password = v
+		ctx.Password, storedPassword = v, false
+	}
+	// A stray AWXCTL_URL must not send the token a context keeps for its own
+	// controller to another host.
+	if urlFromEnv && (storedToken || (storedPassword && ctx.APIToken == "")) {
+		return nil, nil, fmt.Errorf("%w: AWXCTL_URL points context %q at another host while its credentials come from the config file, which would send them there; unset AWXCTL_URL, or give the credentials for that host in the environment too (AWXCTL_API_TOKEN)", ErrNotConfigured, ctxName)
 	}
 	if v := os.Getenv("AWXCTL_INSECURE"); v != "" {
 		b, _ := strconv.ParseBool(v)

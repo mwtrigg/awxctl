@@ -341,7 +341,9 @@ func (c *Client) PlanGraph(ctx context.Context, wfRef string, want []GraphNode) 
 					ids[n.ID] = ID(res)
 					if n.Type == "approval" {
 						if _, err := c.Send(ctx, http.MethodPost, fmt.Sprintf("/workflow_job_template_nodes/%d/create_approval_template/", ID(res)), approval); err != nil {
-							return nil, fmt.Errorf("the node was created but its approval step was not: %w", err)
+							// The node exists without what it should run: stop here rather than
+							// link an empty node into the graph.
+							return res, &OutcomeUnknownError{Method: http.MethodPost, Path: "create_approval_template", Cause: fmt.Errorf("node %q (id %d) was created but its approval step was not; delete the node or run set workflow-graph again: %w", n.ID, ID(res), err)}
 						}
 					}
 					return res, nil

@@ -125,6 +125,10 @@ The JSON result has the text plus line numbers; --text prints only the text.`,
 	},
 }
 
+// largeOutputPause is the extra wait between reads of an output that has to be
+// downloaded whole each time (a var so a test can shorten it).
+var largeOutputPause = 15 * time.Second
+
 // followOutput prints new output lines until the run ends.
 func followOutput(ctx context.Context, client *core.Client, j *core.Job, w *os.File, start int) (*core.Job, error) {
 	if j.Type == "workflow_job" {
@@ -137,8 +141,18 @@ func followOutput(ctx context.Context, client *core.Client, j *core.Job, w *os.F
 			return err
 		}
 		next = n
-		_, err = w.WriteString(text)
-		return err
+		if _, err = w.WriteString(text); err != nil {
+			return err
+		}
+		// Above the display limit every read downloads the whole output again:
+		// ask less often, so following a chatty job does not hammer the controller.
+		if client.OutputIsLarge(job.ID) && !core.Finished(job.Status()) {
+			select {
+			case <-ctx.Done():
+			case <-time.After(largeOutputPause):
+			}
+		}
+		return nil
 	}
 	wctx, cancel := context.WithTimeout(ctx, waitTimeout)
 	defer cancel()

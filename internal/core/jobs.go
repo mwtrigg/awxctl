@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -107,6 +108,10 @@ func (c *Client) Output(ctx context.Context, j *Job, start int) (text string, ne
 
 // outputDownload reads the whole output as one text and cuts it at the start line.
 func (c *Client) outputDownload(ctx context.Context, j *Job, start int) (string, int, error) {
+	if c.largeOutput == nil {
+		c.largeOutput = map[int]bool{}
+	}
+	c.largeOutput[j.ID] = true
 	text, err := c.GetText(ctx, j.Path+"stdout/?format=txt_download")
 	if err != nil {
 		return "", 0, err
@@ -122,6 +127,11 @@ func (c *Client) outputDownload(ctx context.Context, j *Job, start int) (string,
 	}
 	return strings.Join(lines[start:], ""), total, nil
 }
+
+// OutputIsLarge reports whether the job's output has to be downloaded whole on
+// every read (it is above the controller's display limit). Following such a job
+// should poll slowly.
+func (c *Client) OutputIsLarge(id int) bool { return c.largeOutput[id] }
 
 // LineFilter narrows output: lines matching Grep (with Context lines around each
 // match), then the first Head or last Tail of what is left.
@@ -169,6 +179,10 @@ type NumberedLine struct {
 	Text string
 }
 
+// ErrWaitTimeout means the wait ended before the job did. The job is not failed:
+// it is still running.
+var ErrWaitTimeout = errors.New("stopped waiting")
+
 // Wait polls until the run has finished or ctx ends. onPoll, when set, is called
 // after every poll with the current job (for --follow).
 func (c *Client) Wait(ctx context.Context, j *Job, every time.Duration, onPoll func(*Job) error) (*Job, error) {
@@ -191,6 +205,9 @@ func (c *Client) Wait(ctx context.Context, j *Job, every time.Duration, onPoll f
 		}
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return j, fmt.Errorf("%w: job %d is still %s; it keeps running, look again with `awxctl wait %d` or `awxctl get jobs %d`", ErrWaitTimeout, j.ID, j.Status(), j.ID, j.ID)
+			}
 			return j, fmt.Errorf("gave up waiting for job %d (status %s): %w", j.ID, j.Status(), ctx.Err())
 		case <-time.After(every):
 		}

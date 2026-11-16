@@ -26,6 +26,7 @@ const (
 	ExitVersion    = 6 // the controller is older than awxctl supports
 	ExitPermission = 8 // the context's permission tier does not allow the command
 	ExitUnknown    = 7 // a write was sent but its outcome is not known (timeout, 502/504): check before retrying
+	ExitWaiting    = 9 // --wait-timeout ran out and the job is still running (it did not fail)
 )
 
 // Fields, when set, keeps only these fields of each row, in this order, in every
@@ -179,6 +180,8 @@ func KindFor(code int) string {
 		return "unknown_outcome"
 	case ExitPermission:
 		return "permission"
+	case ExitWaiting:
+		return "still_running"
 	default:
 		return "error"
 	}

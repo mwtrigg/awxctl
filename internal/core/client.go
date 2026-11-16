@@ -97,9 +97,10 @@ type Client struct {
 	pass    string
 	retries int
 
-	flavor  Flavor // pinned by config, or set by Detect
-	apiPath string // "/api/v2" or "/api/controller/v2"; empty until Detect
-	gwPath  string // "/api/gateway/v1" on AAP 2.5+; empty on AWX
+	flavor      Flavor       // pinned by config, or set by Detect
+	apiPath     string       // "/api/v2" or "/api/controller/v2"; empty until Detect
+	gwPath      string       // "/api/gateway/v1" on AAP 2.5+; empty on AWX
+	largeOutput map[int]bool // jobs whose output is above the display limit and must be downloaded whole
 
 	// backoff is the wait before retry n (1-based); tests shorten it.
 	backoff func(n int) time.Duration
@@ -209,7 +210,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	if !read && !errors.Is(last, ErrTooLarge) {
 		var api *APIError
-		if !errors.As(last, &api) || api.Status == http.StatusBadGateway || api.Status == http.StatusGatewayTimeout {
+		// A 500 can come after the controller has already committed the change (a
+		// launch that then fails to answer): it is not a definite "no".
+		if !errors.As(last, &api) || api.Status == http.StatusBadGateway || api.Status == http.StatusGatewayTimeout || api.Status == http.StatusInternalServerError {
 			return &OutcomeUnknownError{Method: method, Path: path, Cause: last}
 		}
 	}

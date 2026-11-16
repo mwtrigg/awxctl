@@ -6,8 +6,10 @@ name: Release
 # Two jobs. `verify` has no secrets and no environment: it checks that the tag points at a
 # commit that is on main, then runs the vet, the tests and the notices check (the only place
 # repository code is executed). `release` needs it, runs in the `release` environment (which
-# holds the signing key and accepts only v* tags), and only compiles the code through
-# GoReleaser, so the signing key is never in the same job as the test code. The environment
+# holds the signing key and accepts only v* tags), and builds through GoReleaser. It runs
+# no test code and none of the repository's scripts (the release notes come from verify as
+# an artifact), but GoReleaser does what .goreleaser.yaml on the tagged commit says, so
+# whoever can push to main and create a tag can still reach the key: keep that access small. The environment
 # does not require a reviewer (the owner chose not to), so the controls are the verify job,
 # the tag-on-main check and the tag ruleset.
 #
@@ -48,8 +50,14 @@ jobs:
           go vet ./...
           go test ./...
           go run scripts/notices/main.go | diff -u THIRD_PARTY_NOTICES.md -
-      - name: There are release notes for this tag
-        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > /dev/null
+      - name: Release notes from CHANGELOG.md
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > release-notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 1
 
   release:
     needs: verify
@@ -80,8 +88,14 @@ jobs:
         with:
           go-version: "1.26"
           check-latest: true   # the newest patch, not the one cached on the runner: a cached patch can lack a security fix
-      - name: Release notes from CHANGELOG.md
-        run: scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+      # The notes were written by the verify job, which has no secrets: this job does not
+      # run the repository's scripts next to the signing key.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes
+      - name: Put the release notes in place
+        run: cp "$RUNNER_TEMP/notes/release-notes.md" "$RUNNER_TEMP/release-notes.md"
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           syft-version: v1.57.0

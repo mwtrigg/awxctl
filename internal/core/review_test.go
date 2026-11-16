@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mwtrigg/awxctl/internal/fakeawx"
 )
@@ -549,5 +550,79 @@ func TestVaultValuesAreTrimmed(t *testing.T) {
 	}
 	if isVault("$ANSIBLE_VAULTED but not really") || isVault("see $ANSIBLE_VAULT; in the docs") {
 		t.Error("only text that starts as a vault blob is one")
+	}
+}
+
+// ---- the low-severity review items ----
+
+func TestServerErrorOnAChangeIsUnknown(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/hosts/", map[string]any{"id": 1, "name": "a", "enabled": true})
+	p, _ := c.PlanSetEnabled(context.Background(), FindResource("hosts"), []string{"a"}, nil, false)
+	srv.FailNext("/api/v2/hosts/1/", 500)
+	var uo *OutcomeUnknownError
+	if err := p.Apply(context.Background(), c, nil); !errors.As(err, &uo) || p.Steps[0].Status != "unknown" {
+		t.Errorf("a 500 on a change may have been committed: %v %s", err, p.Steps[0].Status)
+	}
+	// on a read it is a plain error
+	srv.FailNext("/api/v2/hosts/1/", 500)
+	if _, err := c.Get(context.Background(), "/hosts/1/"); err == nil || errors.As(err, &uo) {
+		t.Errorf("a 500 on a read is an error, not an unknown outcome: %v", err)
+	}
+}
+
+func TestListKeepsEachObjectOnce(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	// A new job arrived between the two page reads: page 2 repeats the last row of page 1.
+	srv.Handle("/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			fakeawx.JSON(w, 200, map[string]any{"count": 4, "next": nil, "results": []map[string]any{{"id": 8}, {"id": 7}}})
+			return
+		}
+		fakeawx.JSON(w, 200, map[string]any{"count": 3, "next": "/api/v2/jobs/?page=2", "results": []map[string]any{{"id": 9}, {"id": 8}}})
+	})
+	objs, _, err := c.List(context.Background(), "/jobs/", nil, 0)
+	if err != nil || len(objs) != 3 || ID(objs[0]) != 9 || ID(objs[1]) != 8 || ID(objs[2]) != 7 {
+		t.Errorf("each job once, in order: %v %v", objs, err)
+	}
+}
+
+func TestWaitTimeoutIsNotAFailure(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/jobs/", map[string]any{"id": 5, "status": "running"})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	_, err := c.Wait(ctx, &Job{ID: 5, Type: "job", Path: "/jobs/5/"}, 10*time.Millisecond, nil)
+	if !errors.Is(err, ErrWaitTimeout) || !strings.Contains(err.Error(), "still running") {
+		t.Errorf("a wait that ran out says the job is still running: %v", err)
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	if _, err := c.Wait(ctx2, &Job{ID: 5, Type: "job", Path: "/jobs/5/"}, 10*time.Millisecond, nil); errors.Is(err, ErrWaitTimeout) {
+		t.Errorf("an interrupt is not a wait timeout: %v", err)
+	}
+}
+
+func TestHalfCreatedApprovalNodeStopsTheRun(t *testing.T) {
+	c, srv := liveClient(t, "awx")
+	srv.Add("/workflow_job_templates/", map[string]any{"id": 11, "name": "Release"})
+	srv.Add("/unified_job_templates/", map[string]any{"id": 7, "name": "Build", "type": "job_template"})
+	srv.Add("/workflow_job_templates/11/workflow_nodes/", map[string]any{"id": 100, "identifier": "build", "unified_job_template": 7,
+		"summary_fields": map[string]any{"unified_job_template": map[string]any{"name": "Build", "unified_job_type": "job"}},
+		"success_nodes":  []any{}, "failure_nodes": []any{}, "always_nodes": []any{}})
+	want := []GraphNode{{ID: "build", Template: "Build", OnSuccess: []string{"ok"}}, {ID: "ok", Approval: &GraphApproval{Name: "Go?"}}}
+	p, err := c.PlanGraph(context.Background(), "Release", want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the node is created (generic store), the approval step is refused
+	err = p.Apply(context.Background(), c, nil)
+	var uo *OutcomeUnknownError
+	if !errors.As(err, &uo) || !strings.Contains(err.Error(), "approval step was not") {
+		t.Fatalf("a node without its approval step must stop the run: %v", err)
+	}
+	last := p.Steps[len(p.Steps)-1]
+	if last.Action != "link" || last.Status != "skipped" {
+		t.Errorf("the link to the empty node must not be made: %+v", last)
 	}
 }

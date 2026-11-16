@@ -332,10 +332,23 @@ func (r *FileRecorder) Update(p *Plan) error {
 		tmp.Close()
 		return err
 	}
+	// The record is evidence: it must be on disk, not only in the cache, before
+	// the change it describes is sent.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), r.path)
+	if err := os.Rename(tmp.Name(), r.path); err != nil {
+		return err
+	}
+	if dir, err := os.Open(r.Dir); err == nil { // make the rename durable too, where the system allows it
+		_ = dir.Sync()
+		dir.Close()
+	}
+	return nil
 }
 
 // Prune deletes the oldest records beyond Keep. Records of an unknown outcome are

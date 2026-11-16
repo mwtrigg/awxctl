@@ -6,6 +6,28 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+The low-severity findings of the 2026-11-11 review.
+
+### Changed
+- `--wait-timeout` running out exits **9** (`kind: still_running`), not 1: the job has not failed, it is still
+  running. `wait`, `launch --wait`, `relaunch --wait`, `sync --wait` and `get job-output --follow`.
+- `AWXCTL_URL` no longer redirects a context that keeps its token in the config file to another host (the
+  token would have gone there): give `AWXCTL_API_TOKEN` for that host too, or unset the variable.
+- An HTTP 500 on a change is "outcome unknown" (exit 7), since the change may have been committed.
+- `set workflow-graph`: if an approval node is created but its approval step is not, the run stops there
+  (exit 7) instead of linking an empty node.
+
+### Fixed
+- A long list read while new objects arrive no longer shows the same object twice.
+- `get host-jobs` and `get host-output` cover every host of a name (they stopped at 50).
+- `get job-output --follow` on an output above the display limit polls slowly instead of downloading the whole
+  output every few seconds.
+- Audit records are flushed to disk before the change they describe is sent.
+
+### Build
+- The release notes are produced by the job that has no secrets; the signing job no longer runs repository
+  scripts. Action versions bumped (attest-build-provenance, sbom-action, goreleaser-action).
+
 ## [1.0.0] - 2026-11-16
 
 The first stable release. Nothing changes in behaviour from 0.3.1; from here the command line, the exit
