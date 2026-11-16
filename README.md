@@ -4,8 +4,9 @@ A command-line tool for the AWX and Ansible Automation Platform (AAP) controller
 built for agents and operators: one static binary, JSON by default, structured errors,
 and safe by default (nothing changes without `--apply`).
 
-**Status: early (0.x).** The command set below works and is tested against AWX 24.6 and
-AAP 2.7; commands and JSON shapes can still change between releases. Releases are signed.
+**Status: 1.0.** Tested against AWX 24.6 and AAP 2.7 (see [Supported controllers](#supported-controllers)
+for what "tested" covers). Commands, flags and JSON shapes follow semantic versioning from here: they
+change incompatibly only with a new major version. Releases are signed.
 
 ```
 awxctl diagnose job 1234                         # why did it fail, in one call
@@ -24,6 +25,17 @@ awxctl launch "Patch servers" --limit web1 --apply --wait
 platform from the [Releases](../../releases) page, check it (see
 [Releases and upgrade](#releases-and-upgrade)), and put `awxctl` on your `PATH`. Each archive
 also holds the license and the third-party notices.
+
+**With [eget](https://github.com/zyedidia/eget)** (it picks the archive for your platform and unpacks
+the binary):
+
+```sh
+eget mwtrigg/awxctl --asset '^sbom' --to ~/.local/bin
+```
+
+`--asset '^sbom'` skips the bill-of-materials files that sit next to each archive (without it eget
+asks which file you mean). eget does not check the release signature: for that, see
+[Releases and upgrade](#releases-and-upgrade), or let `awxctl upgrade` do it from then on.
 
 **From source** (Go 1.26 or newer):
 

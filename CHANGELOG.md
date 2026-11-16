@@ -1,9 +1,25 @@
 # Changelog
 
-awxctl is `0.x`: the command line and JSON shapes can still change between releases. The release notes
-are taken from this file (`scripts/release-notes.sh`).
+From 1.0.0 on, awxctl follows semantic versioning: commands, flags, exit codes and JSON shapes change
+incompatibly only with a new major version. The release notes are taken from this file
+(`scripts/release-notes.sh`).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-16
+
+The first stable release. Nothing changes in behaviour from 0.3.1; from here the command line, the exit
+codes and the JSON shapes are a promise.
+
+### Added
+- README: installing with `eget`.
+
+### Known limits
+- Launching and everything else that starts a job is tested against AWX only; on AAP it is built on the same
+  API and checked by `awxctl doctor`, but has not been run there (see Supported controllers in the README).
+- Applying a workflow graph on AAP and attaching notification templates have not been run against a real
+  controller.
+- Event-Driven Ansible, Automation Hub and gateway administration are out of scope.
 
 ## [0.3.1] - 2026-11-11
 
