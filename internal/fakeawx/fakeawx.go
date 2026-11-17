@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -49,6 +50,24 @@ func New(flavor string) *Server {
 	}
 	s.Server = httptest.NewTLSServer(http.HandlerFunc(s.serve))
 	return s
+}
+
+// NewLocal starts a fake that speaks plain HTTP on addr ("127.0.0.1:8043"), for
+// trying awxctl by hand without a controller (see scripts/demo).
+func NewLocal(flavor, addr string) (*Server, error) {
+	s := &Server{Prefix: "/api/v2", Version: "24.6.1", fail: map[string][]int{}, handlers: map[string]http.HandlerFunc{}}
+	if flavor == "aap" {
+		s.Prefix, s.Version = "/api/controller/v2", "4.6.2"
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	s.Server = httptest.NewUnstartedServer(http.HandlerFunc(s.serve))
+	s.Server.Listener.Close()
+	s.Server.Listener = l
+	s.Server.Start()
+	return s, nil
 }
 
 // FailNext makes the next requests for path (without query) answer with these
@@ -200,6 +219,11 @@ func (s *Server) serveStoreAt(w http.ResponseWriter, r *http.Request, body []byt
 				}
 			}
 			sort.SliceStable(match, func(i, j int) bool { return match[i]["id"].(int) < match[j]["id"].(int) })
+			if strings.HasPrefix(r.URL.Query().Get("order_by"), "-") { // newest first, as lists of runs ask
+				for i, j := 0, len(match)-1; i < j; i, j = i+1, j-1 {
+					match[i], match[j] = match[j], match[i]
+				}
+			}
 			size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
 			if size <= 0 {
 				size = 25

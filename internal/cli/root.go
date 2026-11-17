@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -51,6 +53,21 @@ func zone() (*time.Location, error) {
 }
 
 var warnedHTTP bool
+
+// loopback reports whether the url points at this machine, where plain http
+// leaves nothing on a wire (the demo controller, a local port forward).
+func loopback(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // cliErr carries an exit code for an error that was already printed.
 type cliErr struct{ code int }
@@ -191,7 +208,7 @@ func connect() (*config.Context, string, *core.Client, error) {
 	if err := ctx.ValidateMode(); err != nil {
 		return nil, "", nil, &usageError{err.Error()}
 	}
-	if strings.HasPrefix(strings.ToLower(ctx.URL), "http://") && !warnedHTTP {
+	if strings.HasPrefix(strings.ToLower(ctx.URL), "http://") && !warnedHTTP && !loopback(ctx.URL) {
 		warnedHTTP = true
 		fmt.Fprintln(os.Stderr, "warning: the url is http://, so the token and everything else travel unencrypted")
 	}

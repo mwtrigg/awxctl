@@ -69,21 +69,67 @@ func planRows(p *core.Plan) []map[string]any {
 	}
 	if output.Format(flagOutput) == output.FormatTable { // a map prints badly in a cell
 		for _, row := range rows {
-			if res, ok := row["result"].(map[string]any); ok {
-				keys := make([]string, 0, len(res))
-				for k := range res {
-					keys = append(keys, k)
+			for _, key := range []string{"result", "send"} {
+				if m, ok := row[key].(map[string]any); ok {
+					if _, isJob := m["job_id"]; isJob && key == "result" { // a table cell: the job and its status say it
+						short := map[string]any{}
+						for k, v := range m {
+							if k != "type" {
+								short[k] = v
+							}
+						}
+						m = short
+					}
+					row[key] = compact(m)
 				}
-				sort.Strings(keys)
-				parts := make([]string, len(keys))
-				for i, k := range keys {
-					parts[i] = fmt.Sprintf("%s=%v", k, res[k])
-				}
-				row["result"] = strings.Join(parts, " ")
 			}
 		}
 	}
 	return rows
+}
+
+// printPlan prints a plan's steps; a table gets only the columns it needs.
+func printPlan(outFmt output.Format, p *core.Plan) error {
+	rows := planRows(p)
+	cols := planColumns
+	if outFmt == output.FormatTable {
+		cols = planTableColumns(rows)
+	}
+	return output.Print(outFmt, cols, rows)
+}
+
+// compact writes a small map as "a=1 b=x" for a table cell.
+func compact(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := m[k]
+		if inner, ok := v.(map[string]any); ok {
+			b, _ := json.Marshal(inner)
+			v = string(b)
+		}
+		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	}
+	return strings.Join(parts, " ")
+}
+
+// planTableColumns are the columns a plan's table needs: what would be sent is
+// always shown, the rest only where some step has it.
+func planTableColumns(rows []map[string]any) []output.Column {
+	cols := []output.Column{{Key: "target", Header: "TARGET"}, {Key: "action", Header: "ACTION"}, {Key: "status", Header: "STATUS"}}
+	for _, c := range []output.Column{{Key: "send", Header: "SENDS"}, {Key: "result", Header: "RESULT"}, {Key: "impact", Header: "ALSO"}, {Key: "error", Header: "ERROR"}} {
+		for _, row := range rows {
+			if v, ok := row[c.Key]; ok && v != nil && v != "" {
+				cols = append(cols, c)
+				break
+			}
+		}
+	}
+	return cols
 }
 
 // runPlanQuiet is runPlan for a caller that prints the applied result itself.
@@ -108,7 +154,7 @@ func runPlanMode(cmd *cobra.Command, ctx *config.Context, ctxName string, client
 		return false, output.Print(outFmt, planColumns, []map[string]any{})
 	}
 	if !apply {
-		if err := output.Print(outFmt, planColumns, planRows(p)); err != nil {
+		if err := printPlan(outFmt, p); err != nil {
 			return false, err
 		}
 		note := "dry run: nothing was changed; add --apply to do it"
@@ -133,7 +179,7 @@ func runPlanMode(cmd *cobra.Command, ctx *config.Context, ctxName string, client
 	}
 	runErr := p.Apply(cmd.Context(), client, recorder)
 	if !quiet || runErr != nil {
-		if err := output.Print(outFmt, planColumns, planRows(p)); err != nil {
+		if err := printPlan(outFmt, p); err != nil {
 			return true, err
 		}
 	}

@@ -484,29 +484,83 @@ it tells you; then read the output (awxctl get job-output, get host-output).`,
 		if outFmt != output.FormatTable {
 			return output.Print(outFmt, nil, []map[string]any{row})
 		}
-		fmt.Printf("Job %d (%v) %v: %s\n", id, d.Job["type"], d.Job["name"], d.Verdict)
-		for _, f := range d.Failures {
-			fmt.Printf("  FAILED  %v host(s): %v\n          role=%v task=%q (%v)\n          %v\n", f["host_count"], strings.Join(f["hosts"].([]string), ", "), f["role"], f["task"], f["task_path"], output.Printable(fmt.Sprint(f["message"])))
-		}
-		if d.Stalled != nil {
-			fmt.Printf("  STOPPED (%v) in task %q, last result at %v, hosts that did not return: %v\n", d.Stalled["reason"], d.Stalled["last_task"], d.Stalled["last_result_at"], d.Stalled["hosts_not_returned"])
-		}
-		for _, e := range d.Errors {
-			fmt.Printf("  ERROR   line %v: %s\n", e["line"], output.Printable(strings.ReplaceAll(fmt.Sprint(e["text"]), "\n", "\n          ")))
-		}
-		if diff, ok := d.Compare["differences"].(map[string]any); ok {
-			for k, v := range diff {
-				fmt.Printf("  DIFFERS %s: %v\n", k, v)
-			}
-		}
-		for _, n := range d.Nodes {
-			fmt.Printf("  NODE    %v  job=%v  status=%v\n", n["template"], n["job_id"], n["status"])
-		}
-		for _, l := range d.Tail {
-			fmt.Println("  | " + output.Printable(l))
-		}
+		printDiagnosis(id, d)
 		return nil
 	},
+}
+
+// printDiagnosis is the view for a person: short labelled lines that fit a
+// terminal, in the order one reads them (what, where, why, what changed). The
+// JSON form has everything; this leaves out what does not help at a glance.
+func printDiagnosis(id int, d *core.Diagnosis) {
+	p := func(s any) string { return output.Printable(fmt.Sprint(s)) }
+	kind := strings.ReplaceAll(fmt.Sprint(d.Job["type"]), "_", " ")
+	fmt.Printf("%s %d  %s  %s\n", strings.ToUpper(kind[:1])+kind[1:], id, p(d.Job["name"]), strings.ToUpper(fmt.Sprint(d.Job["status"])))
+	// the verdict is one long sentence: one clause a line
+	for _, clause := range strings.Split(d.Verdict, "; ") {
+		fmt.Printf("  %s\n", p(clause))
+	}
+	for _, f := range d.Failures {
+		hosts := f["hosts"].([]string)
+		fmt.Printf("\n  FAILED on %d host(s): %s\n", len(hosts), p(strings.Join(hosts, ", ")))
+		task := fmt.Sprintf("%v", f["task"])
+		if role, _ := f["role"].(string); role != "" {
+			task += "  (role " + role + ")"
+		}
+		fmt.Printf("      task   %s\n", p(task))
+		if path, _ := f["task_path"].(string); path != "" {
+			fmt.Printf("      file   %s\n", p(strings.TrimPrefix(path, "/runner/project/")))
+		}
+		fmt.Printf("      error  %s\n", p(strings.ReplaceAll(fmt.Sprint(f["message"]), "\n", "\n             ")))
+	}
+	if d.Stalled != nil {
+		fmt.Printf("\n  STOPPED (%v) in task %s\n", d.Stalled["reason"], p(d.Stalled["last_task"]))
+		fmt.Printf("      last result  %v\n", d.Stalled["last_result_at"])
+		if missing, _ := d.Stalled["hosts_not_returned"].([]string); len(missing) > 0 {
+			fmt.Printf("      no return    %d of %v host(s): %s\n", len(missing), d.Stalled["hosts_started"], p(strings.Join(missing, ", ")))
+		}
+	}
+	for _, e := range d.Errors {
+		fmt.Printf("\n  ERROR at output line %v\n      %s\n", e["line"], p(strings.ReplaceAll(fmt.Sprint(e["text"]), "\n", "\n      ")))
+	}
+	for _, n := range d.Nodes {
+		fmt.Printf("\n  NODE %s  job %v  %v\n", p(n["template"]), n["job_id"], n["status"])
+	}
+	if d.Compare != nil {
+		last, _ := d.Compare["last_success"].(map[string]any)
+		diff, _ := d.Compare["differences"].(map[string]any)
+		switch {
+		case d.Compare["found"] != true:
+			fmt.Printf("\n  COMPARE  %s\n", p(d.Compare["note"]))
+		case len(diff) == 0:
+			fmt.Printf("\n  SAME settings as the last success (job %v)\n", last["id"])
+		default:
+			fmt.Printf("\n  DIFFERS from the last success (job %v)\n", last["id"])
+			keys := make([]string, 0, len(diff))
+			for k := range diff {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				m, _ := diff[k].(map[string]any)
+				if names, ok := m["names_that_differ"]; ok {
+					fmt.Printf("      %-14s %s\n", k, p(names))
+					continue
+				}
+				this, was := fmt.Sprint(m["this"]), fmt.Sprint(m["last_success"])
+				if k == "scm_revision" && len(this) > 12 && len(was) > 12 { // the short form is enough to tell them apart
+					this, was = this[:12], was[:12]
+				}
+				fmt.Printf("      %-14s %s  (was %s)\n", k, p(this), p(was))
+			}
+		}
+	}
+	if len(d.Tail) > 0 {
+		fmt.Println("\n  LAST OUTPUT")
+		for _, l := range d.Tail {
+			fmt.Println("      " + p(l))
+		}
+	}
 }
 
 var waitCmd = &cobra.Command{

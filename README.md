@@ -8,6 +8,8 @@ and safe by default (nothing changes without `--apply`).
 for what "tested" covers). Commands, flags and JSON shapes follow semantic versioning from here: they
 change incompatibly only with a new major version. Releases are signed.
 
+<p align="center"><img src="docs/awxctl.gif" alt="awxctl in a terminal: list the failed jobs, diagnose one and compare it with the last successful run, then a launch as a dry run and for real" width="860"></p>
+
 ```
 awxctl diagnose job 1234                         # why did it fail, in one call
 awxctl get jobs --failed --since 24h --group-by template
@@ -46,6 +48,23 @@ make build            # or: CGO_ENABLED=0 go build -o awxctl ./cmd/awxctl
 ```
 
 Then create the config file below and run `awxctl auth status`.
+
+### Try it without a controller
+
+The repository has a small made-up controller (the one the tests use, with some data in it), so
+you can try awxctl before pointing it at anything real. From a clone:
+
+```sh
+go run ./scripts/demo &
+export AWXCTL_URL=http://127.0.0.1:8043 AWXCTL_API_TOKEN=fake-token AWXCTL_PERMISSIONS=operator
+awxctl get jobs --failed -o table
+awxctl diagnose job 1042 --compare-last-success -o table
+awxctl launch "Patch servers" --limit web1.example.com            # a dry run
+awxctl launch "Patch servers" --limit web1.example.com --apply
+```
+
+It keeps changes in memory and answers the calls awxctl makes, not the whole API. The picture at the
+top of this page is awxctl's real output against it.
 
 ## Supported controllers
 

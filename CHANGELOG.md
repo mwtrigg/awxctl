@@ -6,6 +6,17 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+### Added
+- `scripts/demo`: a made-up controller on localhost to try awxctl without AWX or AAP (`go run ./scripts/demo`).
+- A demo image and animation in the README (`docs/awxctl.gif`, `docs/awxctl.png`), rendered from real output.
+
+### Changed
+- Table output (`-o table`), for people; JSON is unchanged:
+  - `diagnose job` prints short labelled lines (what failed, where, the error, what differs from the last
+    success) instead of one long sentence;
+  - a plan shows what would be sent (`SENDS`) and only the columns that have something in them.
+- No "url is http://" warning for a controller on this machine (localhost).
+
 ## [1.1.0] - 2026-11-16
 
 The low-severity findings of the 2026-11-11 review.
