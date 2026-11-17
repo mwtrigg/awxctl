@@ -39,6 +39,12 @@ eget mwtrigg/awxctl --asset '^sbom' --to ~/.local/bin
 asks which file you mean). eget does not check the release signature: for that, see
 [Releases and upgrade](#releases-and-upgrade), or let `awxctl upgrade` do it from then on.
 
+**With Go** (1.26 or newer), built from the tagged source:
+
+```sh
+go install github.com/mwtrigg/awxctl/cmd/awxctl@latest
+```
+
 **From source** (Go 1.26 or newer):
 
 ```sh

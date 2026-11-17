@@ -6,6 +6,10 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+### Changed
+- A binary made with `go install github.com/mwtrigg/awxctl/cmd/awxctl@<version>` reports that version instead of `dev`.
+- README: installing with `go install`.
+
 ## [1.2.0] - 2026-11-17
 
 ### Added
