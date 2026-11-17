@@ -6,6 +6,8 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-17
+
 ### Added
 - `awxctl demo`: serves a made-up controller on localhost, to try awxctl without AWX or AAP.
 - A demo image and animation in the README (`docs/awxctl.gif`, `docs/awxctl.png`), rendered from real output.
