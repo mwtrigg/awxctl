@@ -4,16 +4,24 @@
 package fakeawx
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"math/big"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Token is the bearer token the fake accepts.
@@ -29,7 +37,11 @@ type Request struct {
 
 // Server is a running fake controller.
 type Server struct {
-	*httptest.Server
+	URL string // "https://127.0.0.1:port" (or http for a plain one)
+
+	http *http.Server
+	cert *x509.Certificate
+
 	Prefix  string // "/api/v2" or "/api/controller/v2"
 	NoIndex bool   // true: /api/ is not served, as behind some proxies
 	Version string
@@ -42,32 +54,79 @@ type Server struct {
 	handlers map[string]http.HandlerFunc
 }
 
-// New starts a fake of the given flavor: "awx" or "aap".
+// New starts a fake of the given flavor ("awx" or "aap") over TLS on a free
+// local port, with a certificate made for the occasion (see Certificate).
 func New(flavor string) *Server {
-	s := &Server{Prefix: "/api/v2", Version: "24.6.1", fail: map[string][]int{}, handlers: map[string]http.HandlerFunc{}}
-	if flavor == "aap" {
-		s.Prefix, s.Version = "/api/controller/v2", "4.6.2"
+	s := newServer(flavor)
+	cert, parsed, err := selfSigned()
+	if err != nil {
+		panic("fakeawx: " + err.Error())
 	}
-	s.Server = httptest.NewTLSServer(http.HandlerFunc(s.serve))
+	l, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		panic("fakeawx: " + err.Error())
+	}
+	s.cert = parsed
+	s.start(l, "https")
 	return s
 }
 
 // NewLocal starts a fake that speaks plain HTTP on addr ("127.0.0.1:8043"), for
-// trying awxctl by hand without a controller (see scripts/demo).
+// trying awxctl by hand without a controller (awxctl demo).
 func NewLocal(flavor, addr string) (*Server, error) {
-	s := &Server{Prefix: "/api/v2", Version: "24.6.1", fail: map[string][]int{}, handlers: map[string]http.HandlerFunc{}}
-	if flavor == "aap" {
-		s.Prefix, s.Version = "/api/controller/v2", "4.6.2"
-	}
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	s.Server = httptest.NewUnstartedServer(http.HandlerFunc(s.serve))
-	s.Server.Listener.Close()
-	s.Server.Listener = l
-	s.Server.Start()
+	s := newServer(flavor)
+	s.start(l, "http")
 	return s, nil
+}
+
+func newServer(flavor string) *Server {
+	s := &Server{Prefix: "/api/v2", Version: "24.6.1", fail: map[string][]int{}, handlers: map[string]http.HandlerFunc{}}
+	if flavor == "aap" {
+		s.Prefix, s.Version = "/api/controller/v2", "4.6.2"
+	}
+	return s
+}
+
+func (s *Server) start(l net.Listener, scheme string) {
+	s.URL = scheme + "://" + l.Addr().String()
+	// ErrorLog is quiet: a client that refuses the certificate is part of some tests.
+	s.http = &http.Server{Handler: http.HandlerFunc(s.serve), ReadHeaderTimeout: 10 * time.Second, ErrorLog: log.New(io.Discard, "", 0)}
+	go func() { _ = s.http.Serve(l) }()
+}
+
+// Close stops the server and drops its connections.
+func (s *Server) Close() { _ = s.http.Close() }
+
+// Certificate is the certificate a TLS fake presents (nil for a plain one), for
+// a client that should trust it.
+func (s *Server) Certificate() *x509.Certificate { return s.cert }
+
+// selfSigned makes a certificate for 127.0.0.1 and localhost that is valid for a day.
+func selfSigned() (tls.Certificate, *x509.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "awxctl fake controller"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true, IsCA: true,
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}, DNSNames: []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, parsed, nil
 }
 
 // FailNext makes the next requests for path (without query) answer with these

@@ -1,49 +1,33 @@
-// Command demo serves a small made-up controller on localhost, so awxctl can be
-// tried without an AWX or AAP at hand:
-//
-//	go run ./scripts/demo            # prints the two variables to export
-//	export AWXCTL_URL=http://127.0.0.1:8043 AWXCTL_API_TOKEN=fake-token
-//	awxctl get jobs --failed -o table
-//	awxctl diagnose job 1042
+// Package demo is a small made-up controller that awxctl can serve on localhost
+// (`awxctl demo`), so the tool can be tried without an AWX or AAP at hand.
 //
 // Everything it serves is invented (hosts under example.com). It keeps changes
 // in memory, so launch, update and delete can be tried with --apply too; a
 // launched job simply stays pending. It is the fake the tests use, with a
 // little data in it: it answers the calls awxctl makes, not the whole API.
-package main
+package demo
 
 import (
-	"flag"
 	"fmt"
 	"net/http"
-	"os"
-	"os/signal"
 	"strings"
 	"time"
 
 	"github.com/mwtrigg/awxctl/internal/fakeawx"
 )
 
-func main() {
-	addr := flag.String("addr", "127.0.0.1:8043", "address to listen on")
-	flavor := flag.String("flavor", "awx", "awx or aap: which API layout to serve")
-	flag.Parse()
-	srv, err := fakeawx.NewLocal(*flavor, *addr)
+// Token is what the demo accepts as the API token.
+const Token = fakeawx.Token
+
+// Start serves the demo on addr with the layout of flavor ("awx" or "aap") and
+// returns its URL and a function that stops it.
+func Start(flavor, addr string) (url string, stop func(), err error) {
+	srv, err := fakeawx.NewLocal(flavor, addr)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "demo:", err)
-		os.Exit(1)
+		return "", nil, err
 	}
 	seed(srv)
-	fmt.Printf("demo controller (%s layout) on %s; made-up data, kept in memory\n\n", *flavor, srv.URL)
-	fmt.Printf("  export AWXCTL_URL=%s AWXCTL_API_TOKEN=%s AWXCTL_PERMISSIONS=operator\n\n", srv.URL, fakeawx.Token)
-	fmt.Println("try:  awxctl get jobs --failed -o table")
-	fmt.Println("      awxctl diagnose job 1042 --compare-last-success -o table")
-	fmt.Println("      awxctl launch \"Patch servers\" --limit web2.example.com")
-	fmt.Println("\nCtrl-C stops it.")
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-	<-stop
-	srv.Close()
+	return srv.URL, srv.Close, nil
 }
 
 func ago(d time.Duration) string {

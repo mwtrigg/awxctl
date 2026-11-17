@@ -51,11 +51,11 @@ Then create the config file below and run `awxctl auth status`.
 
 ### Try it without a controller
 
-The repository has a small made-up controller (the one the tests use, with some data in it), so
-you can try awxctl before pointing it at anything real. From a clone:
+awxctl carries a small made-up controller (the one its tests use, with some data in it), so you can
+try it before pointing it at anything real:
 
 ```sh
-go run ./scripts/demo &
+awxctl demo &
 export AWXCTL_URL=http://127.0.0.1:8043 AWXCTL_API_TOKEN=fake-token AWXCTL_PERMISSIONS=operator
 awxctl get jobs --failed -o table
 awxctl diagnose job 1042 --compare-last-success -o table

@@ -7,7 +7,7 @@ incompatibly only with a new major version. The release notes are taken from thi
 ## [Unreleased]
 
 ### Added
-- `scripts/demo`: a made-up controller on localhost to try awxctl without AWX or AAP (`go run ./scripts/demo`).
+- `awxctl demo`: serves a made-up controller on localhost, to try awxctl without AWX or AAP.
 - A demo image and animation in the README (`docs/awxctl.gif`, `docs/awxctl.png`), rendered from real output.
 
 ### Changed
