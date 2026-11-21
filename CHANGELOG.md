@@ -18,6 +18,9 @@ incompatibly only with a new major version. The release notes are taken from thi
 ### Fixed
 - A command started by the MCP server no longer applies a change because the context says
   `mode: apply`: over MCP a change is applied only when the tool call asks for it.
+- `get job-timing`: a looped task whose items changed something was counted as unchanged when
+  the task's own result did not say "changed", which put its time under `unchanged` in
+  `meta.summary`. A task now counts as changed on a host when any of its items changed.
 
 ## [1.3.1] - 2026-11-21
 
