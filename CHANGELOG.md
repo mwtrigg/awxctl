@@ -6,6 +6,8 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-21
+
 ### Added
 - `config init`: writes a starting config file (mode 0600) with one context; the token comes
   from standard input, never from a flag, and an existing file is never overwritten.
