@@ -14,6 +14,10 @@ incompatibly only with a new major version. The release notes are taken from thi
   through workflows inside it, and diagnoses the jobs at the end (`leaf_failures`); the verdict
   names the first.
 
+### Fixed
+- `wait`: a wait that ran out while a poll was on its way exited 1 with "context deadline
+  exceeded" instead of 9 (still running).
+
 ### Changed
 - Notes about a result (two hosts sharing a name in `get host-jobs`) are part of the JSON, as
   `meta.notes`, instead of a line on standard error, so that a caller reading both streams

@@ -191,9 +191,17 @@ func (c *Client) Wait(ctx context.Context, j *Job, every time.Duration, onPoll f
 	if every <= 0 {
 		every = 3 * time.Second
 	}
+	stillRunning := func() error {
+		return fmt.Errorf("%w: job %d is still %s; it keeps running, look again with `awxctl wait %d` or `awxctl get jobs %d`", ErrWaitTimeout, j.ID, j.Status(), j.ID, j.ID)
+	}
 	for {
 		obj, err := c.Get(ctx, j.Path)
 		if err != nil {
+			// The wait can run out while a poll is on its way: that is the wait
+			// ending, not an error of the job or the controller.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return j, stillRunning()
+			}
 			return j, err
 		}
 		j = &Job{ID: j.ID, Type: j.Type, Path: j.Path, Obj: obj}
@@ -208,7 +216,7 @@ func (c *Client) Wait(ctx context.Context, j *Job, every time.Duration, onPoll f
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return j, fmt.Errorf("%w: job %d is still %s; it keeps running, look again with `awxctl wait %d` or `awxctl get jobs %d`", ErrWaitTimeout, j.ID, j.Status(), j.ID, j.ID)
+				return j, stillRunning()
 			}
 			return j, fmt.Errorf("gave up waiting for job %d (status %s): %w", j.ID, j.Status(), ctx.Err())
 		case <-time.After(every):
