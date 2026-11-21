@@ -3,7 +3,7 @@ module github.com/mwtrigg/awxctl
 go 1.26.0
 
 require (
-	github.com/jedib0t/go-pretty/v6 v6.8.3
+	github.com/jedib0t/go-pretty/v6 v6.9.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	gopkg.in/yaml.v3 v3.0.1
