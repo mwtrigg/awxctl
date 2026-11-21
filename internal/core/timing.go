@@ -3,6 +3,7 @@ package core
 import (
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -256,4 +257,153 @@ func TimingSummary(tasks []map[string]any) map[string]any {
 		out["seconds_by_outcome"] = secs
 	}
 	return out
+}
+
+// RecapCheck compares a run's task results with the run's own count per host
+// (what the PLAY RECAP prints), host by host: when they agree, no task result
+// is missing from what a timing view was built on.
+//
+// Ansible's recap does not count the way the events read, so the results are
+// counted its way first:
+//
+//   - "ok" includes "changed", a failure that was ignored, and one for every
+//     file a host included (read from the include events' output line, which
+//     names the hosts; where an include also left a task result, as
+//     include_role does, it is counted once);
+//   - a skipped meta task (meta: end_host under a condition) is reported as
+//     skipped but not counted;
+//   - a looped task whose item changed something counts as changed even when
+//     the task's own result does not say so, because it ended failed or was
+//     ignored (itemsChanged are those item results).
+//
+// A host with rescued failures is left out as unverifiable: how a rescue is
+// counted cannot be read from the events with certainty.
+func RecapCheck(results, includes, itemsChanged, hostSummaries []Object) map[string]any {
+	type tally struct{ ok, changed, failed, skipped, unreachable int }
+	got := map[string]*tally{}
+	at := func(host string) *tally {
+		if got[host] == nil {
+			got[host] = &tally{}
+		}
+		return got[host]
+	}
+	type hostTask struct{ host, task string }
+	saidChanged := map[hostTask]bool{}
+	includeResult := map[hostTask]bool{}
+	for _, o := range results {
+		host, _ := o["host_name"].(string)
+		t := at(host)
+		switch o["event"] {
+		case "runner_on_failed":
+			if Lookup(o, "event_data.ignore_errors") == true {
+				t.ok++
+			} else {
+				t.failed++
+			}
+		case "runner_on_unreachable":
+			t.unreachable++
+		case "runner_on_skipped":
+			if action := asString(Lookup(o, "event_data.task_action")); action != "meta" && action != "ansible.builtin.meta" {
+				t.skipped++
+			}
+		default:
+			t.ok++
+			if o["changed"] == true {
+				t.changed++
+				saidChanged[hostTask{host, taskKey(o)}] = true
+			}
+			if strings.Contains(asString(Lookup(o, "event_data.task_action")), "include") {
+				includeResult[hostTask{host, taskKey(o)}] = true
+			}
+		}
+	}
+	counted := map[hostTask]bool{}
+	for _, o := range itemsChanged {
+		k := hostTask{asString(o["host_name"]), taskKey(o)}
+		if !saidChanged[k] && !counted[k] {
+			counted[k] = true
+			at(k.host).changed++
+		}
+	}
+	for _, o := range includes {
+		for _, host := range includedHosts(asString(o["stdout"])) {
+			// Some includes (include_role) also leave a task result, which is
+			// counted already: the include stands in its place, once.
+			if k := (hostTask{host, taskKey(o)}); includeResult[k] {
+				includeResult[k] = false
+				continue
+			}
+			at(host).ok++
+		}
+	}
+	matching, unverifiable := 0, 0
+	var differ []map[string]any
+	for _, h := range hostSummaries {
+		host := asString(h["host_name"])
+		if asInt(h["rescued"]) > 0 {
+			unverifiable++
+			continue
+		}
+		t := at(host)
+		diff := map[string]any{}
+		for _, c := range []struct {
+			name       string
+			got, recap int
+		}{{"ok", t.ok, asInt(h["ok"])}, {"changed", t.changed, asInt(h["changed"])}, {"failed", t.failed, asInt(h["failures"])},
+			{"skipped", t.skipped, asInt(h["skipped"])}, {"unreachable", t.unreachable, asInt(h["dark"])}} {
+			if c.got != c.recap {
+				diff[c.name] = map[string]int{"task_results": c.got, "recap": c.recap}
+			}
+		}
+		if len(diff) == 0 {
+			matching++
+			continue
+		}
+		diff["host"] = host
+		differ = append(differ, diff)
+	}
+	out := map[string]any{"hosts": len(hostSummaries), "hosts_matching": matching, "matches": len(differ) == 0}
+	if unverifiable > 0 {
+		out["hosts_unverifiable"] = unverifiable // rescued failures
+	}
+	if len(differ) > 0 {
+		out["hosts_differing"] = len(differ)
+		if len(differ) > 5 {
+			differ = differ[:5]
+		}
+		out["first_differences"] = differ
+	}
+	return out
+}
+
+// taskKey names the task of an event: its ID, or its play and name where an
+// event carries no ID.
+func taskKey(o Object) string {
+	if id := asString(Lookup(o, "event_data.task_uuid")); id != "" {
+		return id
+	}
+	return asString(o["play"]) + "\x00" + asString(o["task"])
+}
+
+// includedHosts reads the hosts out of an include's output line(s):
+// "included: /path/tasks.yml for web1, web2" (a looped include adds
+// " => (item=...)" after a host).
+func includedHosts(stdout string) []string {
+	var hosts []string
+	for _, line := range strings.Split(StripANSI(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "included: ") {
+			continue
+		}
+		i := strings.Index(line, " for ")
+		if i < 0 {
+			continue
+		}
+		for _, part := range strings.Split(line[i+5:], ", ") {
+			if name := strings.Fields(part); len(name) > 0 {
+				hosts = append(hosts, name[0])
+			}
+		}
+	}
+	return hosts
 }

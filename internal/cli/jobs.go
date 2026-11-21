@@ -290,7 +290,10 @@ meta.summary says what the run's time was spent on, each task counted once with
 its wall clock: changed (a host changed something), failed (none changed, one
 failed), skipped (every host skipped it) and unchanged (it ran and changed
 nothing: a no-op for this run). job_seconds is the run's own runtime; what the
-tasks do not account for is time between tasks.
+tasks do not account for is time between tasks. recap_check compares the task
+results, host by host, with the run's own recap (counted the way Ansible counts:
+includes, ignored failures, skipped meta tasks): when every host matches, no
+task result is missing from the numbers.
 
 The whole run is read (one request per 200 task results), so a very large run
 takes a moment. Time between tasks (gathering, waiting for a free fork) is not
@@ -344,6 +347,18 @@ in any task result: the tasks' wall clocks add up to less than the run.`,
 		if evHost == "" && evTask == "" {
 			if secs, ok := j.Obj["elapsed"]; ok {
 				summary["job_seconds"] = secs
+			}
+			// Three more reads, to see that no task result is missing from the
+			// above: the run's own count per host, and the two things that count
+			// reads differently from the task results (includes, and items of a
+			// loop that changed something). Best effort: a controller that
+			// cannot answer one of them gets no check, not an error.
+			evPath := j.EventsPath()
+			sums, _, e1 := client.List(cmd.Context(), j.Path+"job_host_summaries/", nil, 0)
+			incl, _, e2 := client.List(cmd.Context(), evPath, url.Values{"event": {"playbook_on_include"}, "order_by": {"counter"}}, 0)
+			items, _, e3 := client.List(cmd.Context(), evPath, url.Values{"event": {"runner_item_on_ok"}, "changed": {"true"}, "order_by": {"counter"}}, 0)
+			if e1 == nil && e2 == nil && e3 == nil && core.Finished(j.Status()) {
+				summary["recap_check"] = core.RecapCheck(evs, incl, items, sums)
 			}
 		} else {
 			summary["partial"] = "only the results that --host and --task select"
@@ -408,6 +423,9 @@ func printTimingSummary(sum map[string]any) {
 		line += fmt.Sprintf(" %s %.0f s (%.0f%%, %d tasks);", k, secs[k], 100*secs[k]/total, count[k])
 	}
 	fmt.Fprintln(os.Stderr, strings.TrimSuffix(line, ";"))
+	if rc, ok := sum["recap_check"].(map[string]any); ok && rc["matches"] == false {
+		fmt.Fprintf(os.Stderr, "note: on %v of %v hosts the task results do not add up to the run's recap; the numbers above may miss something (see meta.summary.recap_check with -o json)\n", rc["hosts_differing"], rc["hosts"])
+	}
 }
 
 var hostJobsCmd = &cobra.Command{
