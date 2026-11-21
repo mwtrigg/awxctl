@@ -394,7 +394,8 @@ sha256sum -c --ignore-missing checksums.txt
 `awxctl upgrade` does the same before it replaces itself: it downloads the latest release, verifies
 the signature against the key compiled into the binary and the archive against the signed checksums,
 never installs an older version, starts the new binary once and puts the old one back if it does not
-run. `awxctl upgrade --check` only looks. `upgrade` sends no credentials: it works when the releases
+run. It asks nothing and needs no `--apply`: `awxctl upgrade` upgrades. `awxctl upgrade --check`
+only looks. `upgrade` sends no credentials: it works when the releases
 can be read without logging in. A build made from source after a release is never "upgraded" back to it.
 
 The license and the notices of the libraries awxctl is built with are in `LICENSE` and

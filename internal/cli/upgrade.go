@@ -40,8 +40,22 @@ var upgradeCheckOnly bool
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Update awxctl to the latest release",
-	RunE:  runUpgrade,
+	Long: `Installs the latest release over the running binary:
+
+  awxctl upgrade            # do it
+  awxctl upgrade --check    # only say whether there is a newer release
+
+It asks nothing and needs no --apply: saying "upgrade" is the decision. What makes
+that safe is checked every time: the release's checksums must be signed with the
+key compiled into this binary, the archive must match them, an older version is
+never installed, and the new binary is started once and the old one put back if
+it does not run. Sends no credentials.`,
+	RunE: runUpgrade,
 }
+
+// installRelease installs a release over the running binary (a var so that a
+// test can stand in for the download).
+var installRelease = installLatest
 
 func init() {
 	rootCmd.AddCommand(upgradeCmd)
@@ -76,7 +90,8 @@ func runUpgrade(_ *cobra.Command, _ []string) error {
 	// an update is a different version that is not older than the one running
 	updateAvailable := stripV(current) != stripV(latest) && !olderRelease(current, latest)
 
-	if upgradeCheckOnly || !updateAvailable {
+	// --dry-run means here what it means everywhere: look, change nothing.
+	if upgradeCheckOnly || flagDryRun || !updateAvailable {
 		if outFmt == output.FormatTable {
 			if updateAvailable {
 				fmt.Printf("update available: %s → %s\n", current, latest)
@@ -103,23 +118,8 @@ func runUpgrade(_ *cobra.Command, _ []string) error {
 	if olderRelease(current, latest) {
 		return cliPrintErr(outFmt, fmt.Sprintf("the latest release (%s) is older than the version running (%s); not downgrading", latest, current), output.ExitError)
 	}
-	if !flagApply { // --yes sets flagApply too
-		// The question goes to stderr and stdout stays clean for the JSON result.
-		// With no terminal to answer it, ask for --yes instead of waiting on a pipe.
-		if !isTerminal(os.Stdin) {
-			return cliPrintErr(outFmt, "upgrade needs your confirmation: run it at a terminal, or pass --apply (or --yes)", output.ExitUsage)
-		}
-		fmt.Fprintf(os.Stderr, "continue? [y/N] ")
-		var answer string
-		fmt.Scanln(&answer)
-		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
-			fmt.Fprintln(os.Stderr, "cancelled")
-			return nil
-		}
-	}
-
 	fmt.Fprintf(os.Stderr, "downloading and verifying %s...\n", archiveName(latest, runtime.GOOS, runtime.GOARCH))
-	if err := installLatest(ctx, rel); err != nil {
+	if err := installRelease(ctx, rel); err != nil {
 		return cliPrintErr(outFmt, "upgrade failed: "+err.Error(), output.ExitError)
 	}
 
@@ -191,16 +191,4 @@ func downloadAsset(ctx context.Context, url string, w io.Writer) error {
 
 func stripV(v string) string {
 	return strings.TrimPrefix(v, "v")
-}
-
-// isTerminal reports whether f is an interactive terminal (and not /dev/null).
-func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
-		return false
-	}
-	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(fi, null) {
-		return false
-	}
-	return true
 }
