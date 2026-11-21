@@ -26,7 +26,7 @@ import (
 // can also run programs as this user can call awxctl or the API directly.
 
 // mcpDeniedCommands are never offered over MCP and are refused by the child too.
-var mcpDeniedCommands = []string{"run", "api", "mcp", "context", "completion", "wait", "token", "upgrade", "demo",
+var mcpDeniedCommands = []string{"run", "api", "mcp", "context", "config", "completion", "wait", "token", "upgrade", "demo",
 	// These can change what a template runs, who may run it, or start a run without
 	// `launch`, so the launch allowlist would not hold if an agent had them:
 	"grant", "revoke", "copy", "set"}

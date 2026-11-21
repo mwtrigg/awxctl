@@ -103,7 +103,16 @@ Event-Driven Ansible and Automation Hub are not covered.
 ## Configuration
 
 Flags override `AWXCTL_*` environment variables, which override the config file
-`~/.config/awxctl/config.yaml` (keep it mode 0600):
+`~/.config/awxctl/config.yaml` (keep it mode 0600). `awxctl config init` writes a starting
+file with one context and the other settings as comments, and never overwrites an existing
+one; the token is piped in (`--token-stdin`) or put into the file by hand, never given as a
+flag. `awxctl config path` prints where the file is looked for.
+
+```sh
+awxctl config init --context lab --url https://awx.example.com --token-stdin < token.txt
+```
+
+The file:
 
 ```yaml
 current_context: lab
@@ -225,7 +234,8 @@ Things that are normal on a real controller and handled:
 ## Changing things
 
 Every changing command is a **dry run unless `--apply`** (alias `--yes`) is given, or
-the context says `mode: apply` (then `--dry-run` forces a dry run). The dry run prints
+the context says `mode: apply` (then `--dry-run` forces a dry run; a command started by
+the MCP server never applies because of the mode). The dry run prints
 exactly what would be sent. `--expect N` refuses to run unless exactly N objects would
 change.
 
