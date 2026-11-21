@@ -6,6 +6,8 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-21
+
 ### Added
 - `get job-events`: every task result has a `duration` (seconds on that host), and
   `--slowest N` returns the slowest task results of a run, slowest first: which host held the
@@ -24,6 +26,7 @@ incompatibly only with a new major version. The release notes are taken from thi
 - Notes about a result (two hosts sharing a name in `get host-jobs`) are part of the JSON, as
   `meta.notes`, instead of a line on standard error, so that a caller reading both streams
   still gets one JSON document. Table, CSV and JSONL output still send them to standard error.
+- Dependency: go-pretty 6.9.2.
 
 ## [1.2.1] - 2026-11-17
 
