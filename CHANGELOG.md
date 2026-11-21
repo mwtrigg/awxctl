@@ -6,6 +6,8 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-21
+
 ### Added
 - `get job-timing --by role`: the time per role, summed over the plays and batches that use it.
 - `get job-timing`: `meta.summary` says what the run's time was spent on, each task counted once
