@@ -170,7 +170,16 @@ var jobEventsCmd = &cobra.Command{
 	Long: `Lists a run's events. The usual question is what failed:
 
   awxctl get job-events 1234 --failed
-  awxctl get job-events 1234 --host web1 --changed`,
+  awxctl get job-events 1234 --host web1 --changed
+
+duration is how many seconds the task took on that host. To find what held a
+run up:
+
+  awxctl get job-events 1234 --slowest 10            # the ten slowest task results
+  awxctl get job-events 1234 --slowest 5 --task "Wait for"
+
+--slowest reads every task result of the run (that the other flags select) and
+returns the slowest first.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, err := jobID(args[0])
@@ -218,6 +227,21 @@ var jobEventsCmd = &cobra.Command{
 			q.Add(k, v)
 		}
 		limit := effectiveLimit(cmd, ctx.DefaultLimit)
+		slowest, _ := cmd.Flags().GetInt("slowest")
+		if cmd.Flags().Changed("slowest") {
+			if !j.HasTaskEvents() {
+				return &usageError{"a system job has only output lines, no task results: nothing to time"}
+			}
+			if slowest < 1 {
+				return &usageError{"--slowest wants how many to show, e.g. --slowest 10"}
+			}
+			// The controller cannot order by duration, so every task result is
+			// read and ordered here. Only results have a duration.
+			if q.Get("event") == "" && q.Get("event__startswith") == "" {
+				q.Set("event__in", "runner_on_ok,runner_on_failed,runner_on_unreachable,runner_on_skipped")
+			}
+			limit = 0
+		}
 		evs, total, err := client.List(cmd.Context(), path, q, limit)
 		if err != nil {
 			return err
@@ -225,6 +249,14 @@ var jobEventsCmd = &cobra.Command{
 		rows := make([]map[string]any, len(evs))
 		for i, e := range evs {
 			rows[i] = core.EventRow(e)
+		}
+		if cmd.Flags().Changed("slowest") {
+			sort.SliceStable(rows, func(a, b int) bool { return core.Seconds(rows[a]) > core.Seconds(rows[b]) })
+			output.Note("the %d slowest of %d task results read", min(slowest, len(rows)), len(rows))
+			if len(rows) > slowest {
+				rows = rows[:slowest]
+			}
+			total = len(rows)
 		}
 		output.Limit = limit
 		if total > len(rows) {
@@ -291,7 +323,7 @@ var hostJobsCmd = &cobra.Command{
 			if limit > 0 && len(rows) > limit {
 				rows = rows[:limit]
 			}
-			fmt.Fprintf(os.Stderr, "note: %d hosts in different inventories have this name: their jobs are listed together (see the inventory field; --inventory picks one)\n", len(found))
+			output.Note("%d hosts in different inventories have this name: their jobs are listed together (see the inventory field; --inventory picks one)", len(found))
 		}
 		if rows == nil {
 			rows = []map[string]any{}
@@ -458,7 +490,11 @@ it tells you; then read the output (awxctl get job-output, get host-output).`,
 		if err != nil {
 			return err
 		}
-		d, err := client.Diagnose(cmd.Context(), id)
+		diagnose := client.Diagnose
+		if deep, _ := cmd.Flags().GetBool("recursive"); deep {
+			diagnose = client.DiagnoseDeep
+		}
+		d, err := diagnose(cmd.Context(), id)
 		if err != nil {
 			return err
 		}
@@ -476,6 +512,9 @@ it tells you; then read the output (awxctl get job-output, get host-output).`,
 		}
 		if d.Compare != nil {
 			row["compare"] = d.Compare
+		}
+		if d.Leaves != nil {
+			row["leaf_failures"] = d.Leaves
 		}
 		if len(d.Tail) > 0 {
 			row["tail"] = d.Tail
@@ -525,6 +564,9 @@ func printDiagnosis(id int, d *core.Diagnosis) {
 	}
 	for _, n := range d.Nodes {
 		fmt.Printf("\n  NODE %s  job %v  %v\n", p(n["template"]), n["job_id"], n["status"])
+	}
+	for _, l := range d.Leaves {
+		fmt.Printf("\n  FAILED JOB %v  %s\n      %s\n", l["job_id"], p(l["path"]), p(strings.ReplaceAll(fmt.Sprint(l["verdict"]), "; ", "\n      ")))
 	}
 	if d.Compare != nil {
 		last, _ := d.Compare["last_success"].(map[string]any)
@@ -626,6 +668,7 @@ func init() {
 	addWaitFlags(jobOutputCmd)
 	addWaitFlags(waitCmd)
 
+	jobEventsCmd.Flags().Int("slowest", 0, "the N slowest task results of the run (reads them all), slowest first")
 	jobEventsCmd.Flags().BoolVar(&evFailed, "failed", false, "only failed task results")
 	jobEventsCmd.Flags().BoolVar(&evChanged, "changed", false, "only task results that changed something")
 	jobEventsCmd.Flags().StringVar(&evHost, "host", "", "only this host")
@@ -646,6 +689,7 @@ func init() {
 	workflowNodesCmd.Flags().String("template", "", "show the nodes of this workflow template instead of a workflow job")
 
 	getCmd.AddCommand(jobOutputCmd, jobEventsCmd, hostJobsCmd, jobHostsCmd, workflowNodesCmd, launchInfoCmd)
+	diagnoseJobCmd.Flags().Bool("recursive", false, "for a workflow: follow the failed nodes, also through workflows inside it, and diagnose the jobs that failed")
 	diagnoseJobCmd.Flags().Bool("compare-last-success", false, "also say what differs from the last successful run of the same template")
 	diagnoseCmd.AddCommand(diagnoseJobCmd)
 	rootCmd.AddCommand(diagnoseCmd, waitCmd)

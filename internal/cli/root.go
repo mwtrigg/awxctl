@@ -99,6 +99,7 @@ Settings: flags override AWXCTL_* environment variables, which override
 		output.Raw = flagRaw
 		output.Field = flagField
 		output.Limit, output.Fetched, output.Total, output.TotalKnown = 0, 0, 0, false
+		output.Notes = nil
 		output.Fields = nil
 		for _, f := range strings.Split(flagFields, ",") {
 			if f = strings.TrimSpace(f); f != "" {

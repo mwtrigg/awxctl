@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"sort"
@@ -232,7 +234,7 @@ func (j *Job) HasTaskEvents() bool { return j.Type != "system_job" && j.Type != 
 // EventFields are the flat fields of a job event.
 var EventFields = []Field{
 	f("counter", "N"), f("event", "EVENT"), ff("host", "HOST", "host_name"), f("task", "TASK"), f("play", "PLAY"),
-	f("failed", "FAILED"), f("changed", "CHANGED"), ff("message", "MESSAGE", "event_data.res.msg"),
+	f("failed", "FAILED"), f("changed", "CHANGED"), ff("duration", "SECONDS", "event_data.duration"), ff("message", "MESSAGE", "event_data.res.msg"),
 	w("role"), w("created"), w("start_line"), w("end_line"), w("stdout"), w("id"),
 	wf("module", "event_data.task_action"), wf("stderr", "event_data.res.stderr"), wf("rc", "event_data.res.rc"),
 	wf("task_path", "event_data.task_path"), wf("ignore_errors", "event_data.ignore_errors"),
@@ -241,6 +243,7 @@ var EventFields = []Field{
 // EventRow flattens one event; long texts are cut so a list stays readable.
 func EventRow(o Object) map[string]any {
 	r := (&Resource{Fields: EventFields}).Row(o)
+	r["duration"] = eventSeconds(o)
 	for _, k := range []string{"message", "stderr", "stdout"} {
 		if s, ok := r[k].(string); ok {
 			r[k] = clip(StripANSI(s), 2000)
@@ -249,6 +252,38 @@ func EventRow(o Object) map[string]any {
 		}
 	}
 	return r
+}
+
+// eventSeconds is how long a task took on a host, in seconds: what the runner
+// recorded, or the time between the start and end it recorded. nil for events
+// that are not a task result (a play or task start has no duration).
+func eventSeconds(o Object) any {
+	switch v := Lookup(o, "event_data.duration").(type) {
+	case float64:
+		return math.Round(v*1000) / 1000
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return math.Round(f*1000) / 1000
+		}
+	}
+	start, _ := Lookup(o, "event_data.start").(string)
+	end, _ := Lookup(o, "event_data.end").(string)
+	if start != "" && end != "" {
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999"} {
+			a, err1 := time.Parse(layout, start)
+			b, err2 := time.Parse(layout, end)
+			if err1 == nil && err2 == nil && !b.Before(a) {
+				return math.Round(b.Sub(a).Seconds()*1000) / 1000
+			}
+		}
+	}
+	return nil
+}
+
+// Seconds reads a row's duration as a number (0 when it has none).
+func Seconds(row map[string]any) float64 {
+	f, _ := row["duration"].(float64)
+	return f
 }
 
 func clip(s string, n int) string {
@@ -286,8 +321,88 @@ type Diagnosis struct {
 	Tail   []string         `json:"tail,omitempty"` // last output lines, without timing-only lines, when there is no better evidence
 	// Compare is set by CompareLastSuccess: what differs from the last good run.
 	Compare map[string]any `json:"compare,omitempty"`
+	// Leaves is set by DiagnoseDeep for a workflow: the jobs at the ends of the
+	// failed branches, however deep, each with its own verdict and failures.
+	Leaves []map[string]any `json:"leaf_failures,omitempty"`
 
 	failedHosts int // distinct hosts among the failure events
+}
+
+// maxLeaves bounds how many failed jobs a deep diagnosis of a workflow reads,
+// and maxDepth how many workflows inside workflows it follows.
+const (
+	maxLeaves = 40
+	maxDepth  = 8
+)
+
+// DiagnoseDeep diagnoses a job and, when it is a workflow, follows the nodes that
+// did not succeed down to the jobs that actually failed (a workflow node can be
+// a workflow again) and diagnoses each of those. It returns the top diagnosis
+// with Leaves filled in and the verdict naming them, so that one call answers
+// "what broke" for a nested workflow.
+func (c *Client) DiagnoseDeep(ctx context.Context, id int) (*Diagnosis, error) {
+	d, err := c.Diagnose(ctx, id)
+	if err != nil || d.Job["type"] != "workflow_job" || len(d.Nodes) == 0 {
+		return d, err
+	}
+	d.Leaves = []map[string]any{}
+	skipped, notRun := 0, 0
+	var walk func(nodes []map[string]any, path string, depth int) error
+	walk = func(nodes []map[string]any, path string, depth int) error {
+		for _, n := range nodes {
+			jid := asInt(n["job_id"])
+			name := fmt.Sprint(n["job_name"])
+			if n["job_name"] == nil {
+				name = fmt.Sprint(n["template"])
+			}
+			if jid == 0 { // the node never started a job: a consequence, not a cause
+				notRun++
+				continue
+			}
+			if len(d.Leaves) >= maxLeaves {
+				skipped++
+				continue
+			}
+			child, err := c.Diagnose(ctx, jid)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) || errors.Is(err, ErrDenied) {
+					d.Leaves = append(d.Leaves, map[string]any{"job_id": jid, "name": name, "path": path + name, "verdict": "cannot be read: " + err.Error()})
+					continue
+				}
+				return err
+			}
+			if child.Job["type"] == "workflow_job" && len(child.Nodes) > 0 && depth < maxDepth {
+				if err := walk(child.Nodes, path+name+" > ", depth+1); err != nil {
+					return err
+				}
+				continue
+			}
+			leaf := map[string]any{"job_id": jid, "name": name, "path": path + name, "type": child.Job["type"], "status": child.Job["status"],
+				"verdict": child.Verdict, "failures": child.Failures}
+			if child.Stalled != nil {
+				leaf["stalled"] = child.Stalled
+			}
+			if len(child.Errors) > 0 {
+				leaf["errors"] = child.Errors
+			}
+			d.Leaves = append(d.Leaves, leaf)
+		}
+		return nil
+	}
+	if err := walk(d.Nodes, "", 1); err != nil {
+		return nil, err
+	}
+	if len(d.Leaves) > 0 {
+		first := d.Leaves[0]
+		d.Verdict = fmt.Sprintf("%v: %d job(s) at the end of the failed branches; first: %v (job %v): %v", d.Job["status"], len(d.Leaves), first["path"], first["job_id"], first["verdict"])
+		if skipped > 0 {
+			d.Verdict += fmt.Sprintf("; %d more failed job(s) were not read (the limit is %d)", skipped, maxLeaves)
+		}
+		if notRun > 0 {
+			d.Verdict += fmt.Sprintf("; %d node(s) did not run a job", notRun)
+		}
+	}
+	return d, nil
 }
 
 // maxFailureEvents bounds how many failed task results a diagnosis reads.
