@@ -170,3 +170,78 @@ func TestDiagnoseRecursiveFollowsNestedWorkflows(t *testing.T) {
 		t.Errorf("--recursive on a plain job: %d %v", code, rows[0]["verdict"])
 	}
 }
+
+// Where the time went: per task, per play and per host, from the task results.
+func TestJobTiming(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/unified_jobs/", map[string]any{"id": 710, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 710, "name": "Patch", "status": "successful"})
+	srv.Add("/unified_jobs/", map[string]any{"id": 711, "type": "workflow_job"})
+	srv.Add("/workflow_jobs/", map[string]any{"id": 711, "name": "Weekly", "status": "successful"})
+	n := 0
+	ev := func(event, host, play, task, taskID string, changed bool, start, end string) map[string]any {
+		n++
+		return map[string]any{"id": n, "counter": n, "event": event, "host_name": host, "play": play, "task": task, "changed": changed,
+			"event_data": map[string]any{"task_uuid": taskID, "play_uuid": "p-" + play, "start": "2026-03-01T10:" + start, "end": "2026-03-01T10:" + end}}
+	}
+	var asked string
+	srv.Handle("/jobs/710/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.RawQuery
+		fakeawx.JSON(w, 200, map[string]any{"count": 6, "results": []map[string]any{
+			ev("runner_on_ok", "web1", "Patch", "Install", "t1", true, "00:00.000000", "00:10.000000"),
+			ev("runner_on_ok", "web2", "Patch", "Install", "t1", false, "00:00.000000", "00:04.000000"),
+			ev("runner_on_ok", "web1", "Patch", "Wait", "t2", false, "00:10.000000", "00:40.000000"),
+			ev("runner_on_failed", "web2", "Patch", "Wait", "t2", false, "00:10.000000", "05:10.000000"),
+			ev("runner_on_skipped", "web1", "Report", "Mail", "t3", false, "05:10.000000", "05:10.500000"),
+			// the same task name again in another play is another task
+			ev("runner_on_ok", "web1", "Report", "Install", "t4", true, "05:11.000000", "05:12.000000"),
+		}})
+	})
+	out, errOut, code := runCLI(t, env, "get", "job-timing", "710")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	rows, meta := decode(t, out)
+	if len(rows) != 4 || rows[0]["task"] != "Install" || rows[1]["task"] != "Wait" || rows[3]["play"] != "Report" {
+		t.Fatalf("one row per task, in the order they ran: %v", rows)
+	}
+	install, wait := rows[0], rows[1]
+	if install["wall_seconds"] != 10.0 || install["host_seconds"] != 14.0 || install["slowest_host"] != "web1" || install["changed"] != 1.0 || install["unchanged"] != 1.0 || install["hosts"] != 2.0 {
+		t.Errorf("Install: %v", install)
+	}
+	if wait["wall_seconds"] != 300.0 || wait["host_seconds"] != 330.0 || wait["slowest_host"] != "web2" || wait["slowest_seconds"] != 300.0 || wait["failed"] != 1.0 {
+		t.Errorf("Wait: %v", wait)
+	}
+	if !strings.Contains(asked, "event__in=runner_on_ok") || !strings.Contains(fmt.Sprint(meta["notes"]), "6 task results") || meta["total"] != 4.0 {
+		t.Errorf("asked %s, meta %v", asked, meta)
+	}
+	out, _, _ = runCLI(t, env, "get", "job-timing", "710", "--sort", "wall", "--limit", "1")
+	if rows, meta = decode(t, out); len(rows) != 1 || rows[0]["task"] != "Wait" || meta["limit_reached"] != true {
+		t.Errorf("--sort wall --limit 1: %v %v", rows, meta)
+	}
+	out, _, _ = runCLI(t, env, "get", "job-timing", "710", "--changed")
+	if rows, _ = decode(t, out); len(rows) != 2 || rows[1]["play"] != "Report" {
+		t.Errorf("--changed: %v", rows)
+	}
+	out, _, _ = runCLI(t, env, "get", "job-timing", "710", "--by", "play")
+	if rows, _ = decode(t, out); len(rows) != 2 || rows[0]["play"] != "Patch" || rows[0]["wall_seconds"] != 310.0 || rows[0]["tasks"] != 2.0 || rows[0]["hosts"] != 2.0 || rows[0]["slowest_host"] != "web2" {
+		t.Errorf("--by play: %v", rows)
+	}
+	// Per host, the costliest first: which host held the play.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "710", "--by", "host")
+	if rows, _ = decode(t, out); len(rows) != 2 || rows[0]["host"] != "web2" || rows[0]["host_seconds"] != 304.0 || rows[0]["slowest_task"] != "Wait" || rows[1]["tasks"] != 4.0 {
+		t.Errorf("--by host: %v", rows)
+	}
+	for _, c := range []struct {
+		want string
+		args []string
+	}{
+		{"--by is task, play or host", []string{"get", "job-timing", "710", "--by", "role"}},
+		{"--sort is run", []string{"get", "job-timing", "710", "--sort", "name"}},
+		{"only a playbook run", []string{"get", "job-timing", "711"}},
+	} {
+		if _, errOut, code := runCLI(t, env, c.args...); code != 5 || !strings.Contains(errOut, c.want) {
+			t.Errorf("%v: %d %s (want %q)", c.args, code, errOut, c.want)
+		}
+	}
+}

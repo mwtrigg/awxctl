@@ -267,6 +267,106 @@ returns the slowest first.`,
 	},
 }
 
+var jobTimingCmd = &cobra.Command{
+	Use:   "job-timing <job-id>",
+	Short: "Where a run's time went: per task, per play or per host",
+	Long: `Reads a run's task results and shows where the time went:
+
+  awxctl get job-timing 1234 -o table              # one row per task, in the order they ran
+  awxctl get job-timing 1234 --sort wall --limit 10   # the ten tasks that took longest
+  awxctl get job-timing 1234 --by play
+  awxctl get job-timing 1234 --by host             # which hosts cost the most time
+  awxctl get job-timing 1234 --changed             # only tasks that changed something
+
+Per task: wall_seconds (first start to last end over all hosts), host_seconds
+(the sum over hosts, more than the wall clock when hosts run side by side),
+slowest_seconds and slowest_host, and how many hosts changed, were unchanged,
+failed or were skipped. --by host turns it round: per host, the time it used and
+its slowest task.
+
+The whole run is read (one request per 200 task results), so a very large run
+takes a moment. Time between tasks (gathering, waiting for a free fork) is not
+in any task result: the tasks' wall clocks add up to less than the run.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := jobID(args[0])
+		if err != nil {
+			return err
+		}
+		by, _ := cmd.Flags().GetString("by")
+		sortBy, _ := cmd.Flags().GetString("sort")
+		onlyChanged, _ := cmd.Flags().GetBool("changed")
+		if by != "task" && by != "play" && by != "host" {
+			return &usageError{"--by is task, play or host"}
+		}
+		keys := map[string]string{"run": "", "wall": "wall_seconds", "host-time": "host_seconds", "slowest": "slowest_seconds"}
+		sortKey, ok := keys[sortBy]
+		if !ok {
+			return &usageError{"--sort is run (the order they ran), wall, host-time or slowest"}
+		}
+		ctx, _, client, err := connect()
+		if err != nil {
+			return err
+		}
+		j, err := client.FindJob(cmd.Context(), id)
+		if err != nil {
+			return err
+		}
+		if j.Type != "job" {
+			return &usageError{fmt.Sprintf("only a playbook run has tasks to time; job %d is a %s", id, strings.ReplaceAll(j.Type, "_", " "))}
+		}
+		q := url.Values{"order_by": {"counter"}, "event__in": {core.TimingEvents}}
+		if evHost != "" {
+			q.Set("host_name", evHost)
+		}
+		if evTask != "" {
+			q.Set("task__icontains", evTask)
+		}
+		evs, _, err := client.List(cmd.Context(), j.EventsPath(), q, 0)
+		if err != nil {
+			return err
+		}
+		rows := core.Timing(evs, by)
+		if onlyChanged {
+			kept := rows[:0]
+			for _, r := range rows {
+				if n, _ := r["changed"].(int); n > 0 {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
+		if sortKey != "" {
+			num := func(r map[string]any) float64 { f, _ := r[sortKey].(float64); return f }
+			sort.SliceStable(rows, func(a, b int) bool { return num(rows[a]) > num(rows[b]) })
+		}
+		output.Note("built from %d task results of job %d", len(evs), id)
+		if !core.Finished(j.Status()) {
+			output.Note("the job is still %s: this is what has happened so far", j.Status())
+		}
+		if len(rows) > 0 && rows[0]["wall_seconds"] == nil {
+			output.Note("this controller's events carry no start and end times, so there is no wall clock per %s: use host_seconds and slowest_seconds", by)
+		}
+		output.Total, output.TotalKnown = len(rows), true
+		limit := effectiveLimit(cmd, ctx.DefaultLimit)
+		if limit > 0 && len(rows) > limit {
+			rows = rows[:limit]
+			output.Limit, output.Fetched = limit, limit
+		}
+		var cols []output.Column
+		switch by {
+		case "host":
+			cols = []output.Column{{Key: "host", Header: "HOST"}, {Key: "host_seconds", Header: "SECONDS"}, {Key: "tasks", Header: "TASKS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_task", Header: "SLOWEST TASK"}}
+		case "play":
+			cols = []output.Column{{Key: "play", Header: "PLAY"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "tasks", Header: "TASKS"}, {Key: "hosts", Header: "HOSTS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_host", Header: "SLOWEST HOST"}}
+		default:
+			cols = []output.Column{{Key: "task", Header: "TASK"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "hosts", Header: "HOSTS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_host", Header: "SLOWEST HOST"}}
+		}
+		cols = append(cols, output.Column{Key: "changed", Header: "CHANGED"}, output.Column{Key: "unchanged", Header: "UNCHANGED"}, output.Column{Key: "failed", Header: "FAILED"}, output.Column{Key: "skipped", Header: "SKIPPED"})
+		return output.Print(output.Format(flagOutput), cols, rows)
+	},
+}
+
 var hostJobsCmd = &cobra.Command{
 	Use:   "host-jobs <host>",
 	Short: "List the jobs that ran against a host, newest first, with the host's result in each",
@@ -688,7 +788,13 @@ func init() {
 	launchInfoCmd.Flags().Bool("workflow", false, "the template is a workflow template")
 	workflowNodesCmd.Flags().String("template", "", "show the nodes of this workflow template instead of a workflow job")
 
-	getCmd.AddCommand(jobOutputCmd, jobEventsCmd, hostJobsCmd, jobHostsCmd, workflowNodesCmd, launchInfoCmd)
+	jobTimingCmd.Flags().String("by", "task", "one row per task, play or host")
+	jobTimingCmd.Flags().String("sort", "run", "run (the order they ran), wall, host-time or slowest; longest first")
+	jobTimingCmd.Flags().Bool("changed", false, "only rows where something changed")
+	jobTimingCmd.Flags().StringVar(&evHost, "host", "", "only this host's results")
+	jobTimingCmd.Flags().StringVar(&evTask, "task", "", "only tasks whose name contains this")
+	jobTimingCmd.Flags().IntVar(&getLimit, "limit", 0, "most rows to return; -1 = all")
+	getCmd.AddCommand(jobOutputCmd, jobEventsCmd, jobTimingCmd, hostJobsCmd, jobHostsCmd, workflowNodesCmd, launchInfoCmd)
 	diagnoseJobCmd.Flags().Bool("recursive", false, "for a workflow: follow the failed nodes, also through workflows inside it, and diagnose the jobs that failed")
 	diagnoseJobCmd.Flags().Bool("compare-last-success", false, "also say what differs from the last successful run of the same template")
 	diagnoseCmd.AddCommand(diagnoseJobCmd)

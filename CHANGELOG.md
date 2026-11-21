@@ -10,6 +10,8 @@ incompatibly only with a new major version. The release notes are taken from thi
 - `get job-events`: every task result has a `duration` (seconds on that host), and
   `--slowest N` returns the slowest task results of a run, slowest first: which host held the
   play.
+- `get job-timing`: where a run's time went, one row per task (wall clock, host time, slowest
+  host, how many hosts changed or not), per play (`--by play`) or per host (`--by host`).
 - `diagnose job --recursive`: for a workflow, follows the nodes that did not succeed, also
   through workflows inside it, and diagnoses the jobs at the end (`leaf_failures`); the verdict
   names the first.
