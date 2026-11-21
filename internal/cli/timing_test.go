@@ -263,7 +263,11 @@ func TestJobTimingSerialBatchesRolesAndSummary(t *testing.T) {
 		return map[string]any{"id": n, "counter": n, "event": event, "host_name": host, "play": "Rolling restart", "role": role, "task": task, "changed": changed,
 			"event_data": map[string]any{"task_uuid": taskID, "play_uuid": playID, "start": "2026-03-01T10:" + start, "end": "2026-03-01T10:" + end}}
 	}
-	srv.Handle("/jobs/720/job_events/", func(w http.ResponseWriter, _ *http.Request) {
+	srv.Handle("/jobs/720/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("event__in") == "" { // loop items, includes: none here
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+			return
+		}
 		fakeawx.JSON(w, 200, map[string]any{"count": 7, "results": []map[string]any{
 			// batch 1: web1
 			ev("runner_on_ok", "web1", "batch-1", "reboot", "Reboot", "t1", true, "00:00.000000", "01:00.000000"),
@@ -415,5 +419,79 @@ func TestJobTimingRecapCheck(t *testing.T) {
 	srv.Collection("/jobs/")[len(srv.Collection("/jobs/"))-1]["status"] = "running"
 	if rc := check(); rc != nil {
 		t.Errorf("no check while the job runs: %v", rc)
+	}
+}
+
+// A loop reports per item. Its own final result can say "not changed" although
+// every item changed something: the task did change that host, and its time is
+// time spent changing things.
+func TestJobTimingLoopItemsMakeATaskChanged(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/unified_jobs/", map[string]any{"id": 740, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 740, "name": "Cleanup", "status": "successful", "elapsed": 2200.0})
+	res := func(n int, host, task, id string, changed bool, start, end string) map[string]any {
+		return map[string]any{"id": n, "counter": n, "event": "runner_on_ok", "host_name": host, "play": "Cleanup", "role": "cleanup", "task": task, "changed": changed,
+			"event_data": map[string]any{"task_uuid": id, "play_uuid": "p1", "start": "2026-03-01T10:" + start, "end": "2026-03-01T10:" + end}}
+	}
+	var itemQuery string
+	srv.Handle("/jobs/740/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case q.Get("event") == "runner_item_on_ok":
+			itemQuery = r.URL.RawQuery
+			fakeawx.JSON(w, 200, map[string]any{"count": 2, "results": []map[string]any{
+				{"id": 90, "counter": 90, "event": "runner_item_on_ok", "host_name": "web1", "changed": true, "play": "Cleanup", "task": "Delete old folders", "event_data": map[string]any{"task_uuid": "t1"}},
+				{"id": 91, "counter": 91, "event": "runner_item_on_ok", "host_name": "web1", "changed": true, "play": "Cleanup", "task": "Delete old folders", "event_data": map[string]any{"task_uuid": "t1"}},
+			}})
+		case q.Get("event__in") != "":
+			fakeawx.JSON(w, 200, map[string]any{"count": 3, "results": []map[string]any{
+				// the loop: its own result says not changed
+				res(1, "web1", "Delete old folders", "t1", false, "00:00.000000", "36:00.000000"),
+				// the same task on a host where no item changed
+				res(2, "web2", "Delete old folders", "t1", false, "00:00.000000", "00:05.000000"),
+				res(3, "web1", "Report", "t2", false, "36:00.000000", "36:10.000000"),
+			}})
+		default:
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+		}
+	})
+	srv.Handle("/jobs/740/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 2, "results": []map[string]any{
+			{"host_name": "web1", "ok": 2, "changed": 1, "failures": 0, "skipped": 0, "dark": 0},
+			{"host_name": "web2", "ok": 1, "changed": 0, "failures": 0, "skipped": 0, "dark": 0}}})
+	})
+	out, errOut, code := runCLI(t, env, "get", "job-timing", "740")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	rows, meta := decode(t, out)
+	loop := rows[0]
+	if loop["task"] != "Delete old folders" || loop["changed"] != 1.0 || loop["unchanged"] != 1.0 || loop["wall_seconds"] != 2160.0 {
+		t.Errorf("the loop changed web1 and not web2: %v", loop)
+	}
+	sum := meta["summary"].(map[string]any)
+	secs := sum["seconds_by_outcome"].(map[string]any)
+	if secs["changed"] != 2160.0 || secs["unchanged"] != 10.0 {
+		t.Errorf("the loop's time is time spent changing things: %v", secs)
+	}
+	if rc := sum["recap_check"].(map[string]any); rc["matches"] != true {
+		t.Errorf("and the recap still agrees: %v", rc)
+	}
+	// The same from the other views.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "740", "--by", "host")
+	if rows, _ = decode(t, out); rows[0]["host"] != "web1" || rows[0]["changed"] != 1.0 || rows[0]["unchanged"] != 1.0 || rows[1]["changed"] != 0.0 {
+		t.Errorf("--by host: %v", rows)
+	}
+	out, _, _ = runCLI(t, env, "get", "job-timing", "740", "--by", "role")
+	if rows, _ = decode(t, out); rows[0]["changed"] != 1.0 || rows[0]["unchanged"] != 2.0 {
+		t.Errorf("--by role: %v", rows)
+	}
+	if out, _, _ = runCLI(t, env, "get", "job-timing", "740", "--changed"); len(func() []map[string]any { r, _ := decode(t, out); return r }()) != 1 {
+		t.Errorf("--changed keeps the loop: %s", out)
+	}
+	// --host and --task narrow the item read too.
+	runCLI(t, env, "get", "job-timing", "740", "--host", "web1", "--task", "Delete")
+	if !strings.Contains(itemQuery, "host_name=web1") || !strings.Contains(itemQuery, "task__icontains=Delete") || !strings.Contains(itemQuery, "changed=true") {
+		t.Errorf("the item read follows the filters: %s", itemQuery)
 	}
 }

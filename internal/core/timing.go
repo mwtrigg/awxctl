@@ -64,7 +64,7 @@ type timing struct {
 	first              int
 }
 
-func (t *timing) add(o Object, secs float64, slowestName string) {
+func (t *timing) add(o Object, secs float64, slowestName string, itemChanged bool) {
 	t.span.add(eventTime(o, "start"), eventTime(o, "end"))
 	t.total += secs
 	if secs > t.slowest || t.slowestOf == "" {
@@ -78,7 +78,9 @@ func (t *timing) add(o Object, secs float64, slowestName string) {
 	case "runner_on_skipped":
 		t.skipped++
 	default:
-		if o["changed"] == true {
+		// A loop reports per item: the task's own result can say "not changed"
+		// although items did change something. Any changed item makes it changed.
+		if o["changed"] == true || itemChanged {
 			t.changed++
 		} else {
 			t.unchanged++
@@ -90,13 +92,22 @@ func (t *timing) add(o Object, secs float64, slowestName string) {
 // "play", "host"). Tasks and plays come in the order they ran; hosts with the
 // most host time first.
 //
+// itemsChanged are the results of loop items that changed something: a looped
+// task counts as changed on a host when one of its items did, whatever the
+// task's own result says.
+//
 // wall_seconds is the time from the first start to the last end among the
 // results (nil when the controller's events carry no start and end);
 // host_seconds is the sum over hosts, which is more than the wall clock when
 // hosts run side by side.
-func Timing(evs []Object, by string) []map[string]any {
+func Timing(evs, itemsChanged []Object, by string) []map[string]any {
 	if by == "role" {
-		return byRole(Timing(evs, "task"))
+		return byRole(Timing(evs, itemsChanged, "task"))
+	}
+	type hostTask struct{ host, task string }
+	changedItem := map[hostTask]bool{}
+	for _, o := range itemsChanged {
+		changedItem[hostTask{asString(o["host_name"]), taskKey(o)}] = true
 	}
 	groups := map[string]*timing{}
 	playRun := map[string]map[string]int{}
@@ -150,7 +161,7 @@ func Timing(evs []Object, by string) []map[string]any {
 		}
 		g.hosts[host] = true
 		g.tasks[asString(Lookup(o, "event_data.task_uuid"))+"\x00"+task] = true
-		g.add(o, secs, slowestName)
+		g.add(o, secs, slowestName, changedItem[hostTask{host, taskKey(o)}])
 	}
 	if by == "host" {
 		sort.SliceStable(order, func(i, j int) bool { return groups[order[i]].total > groups[order[j]].total })
