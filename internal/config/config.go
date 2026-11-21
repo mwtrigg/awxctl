@@ -428,3 +428,6 @@ func WriteCurrentContext(name string) error {
 	}
 	return os.Rename(tmp.Name(), path)
 }
+
+// Path is where the config file is looked for.
+func Path() (string, error) { return defaultConfigPath() }

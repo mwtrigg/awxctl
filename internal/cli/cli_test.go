@@ -17,7 +17,11 @@ import (
 // returns stdout, stderr and the exit code.
 func runCLI(t *testing.T, env map[string]string, args ...string) (string, string, int) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	if home := os.Getenv("AWXCTL_TEST_HOME"); home != "" {
+		t.Setenv("HOME", home) // a test that needs the same home over several runs
+	} else {
+		t.Setenv("HOME", t.TempDir())
+	}
 	for _, k := range []string{"AWXCTL_OUTPUT", "AWXCTL_URL", "AWXCTL_API_TOKEN", "AWXCTL_CONTEXT", "AWXCTL_INSECURE", "AWXCTL_FLAVOR", "AWXCTL_PERMISSIONS", "AWXCTL_MODE", "AWXCTL_USERNAME", "AWXCTL_PASSWORD"} {
 		t.Setenv(k, "")
 	}

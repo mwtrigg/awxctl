@@ -148,7 +148,9 @@ func runPlanMode(cmd *cobra.Command, ctx *config.Context, ctxName string, client
 	if cmd.Flags().Changed("expect") && flagExpect != len(p.Steps) {
 		return false, &usageError{fmt.Sprintf("--expect %d, but this would change %d object(s): nothing was changed", flagExpect, len(p.Steps))}
 	}
-	apply := flagApply || (ctx.ApplyByDefault() && !flagDryRun)
+	// mode: apply is a person's convenience. A process started by the MCP server
+	// never applies without being told to, whatever the context or environment says.
+	apply := flagApply || (ctx.ApplyByDefault() && !flagDryRun && os.Getenv("AWXCTL_FROM_MCP") == "")
 	if len(p.Steps) == 0 {
 		fmt.Fprintln(os.Stderr, "nothing to change: everything is already as asked")
 		return false, output.Print(outFmt, planColumns, []map[string]any{})

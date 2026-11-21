@@ -157,6 +157,7 @@ func runGet(r *core.Resource) func(*cobra.Command, []string) error {
 		}
 		outFmt := output.Format(flagOutput)
 		if len(args) == 1 { // one object: every field
+			output.Record = true // as a table: down the page, not one very wide row
 			extra := url.Values{}
 			if r.Scope != "" {
 				if fl := cmd.Flags().Lookup(r.Scope); fl != nil && fl.Changed {

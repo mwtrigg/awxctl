@@ -6,6 +6,19 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+### Added
+- `config init`: writes a starting config file (mode 0600) with one context; the token comes
+  from standard input, never from a flag, and an existing file is never overwritten.
+  `config path` prints where the file is looked for.
+
+### Changed
+- One object shown as a table (`get hosts web1 -o table`) is printed down the page, one field
+  a line, instead of as one very wide row. JSON, JSONL and CSV are unchanged.
+
+### Fixed
+- A command started by the MCP server no longer applies a change because the context says
+  `mode: apply`: over MCP a change is applied only when the tool call asks for it.
+
 ## [1.3.1] - 2026-11-21
 
 ### Added
