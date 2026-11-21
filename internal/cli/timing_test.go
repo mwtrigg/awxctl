@@ -186,6 +186,10 @@ func TestJobTiming(t *testing.T) {
 	}
 	var asked string
 	srv.Handle("/jobs/710/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("event__in") == "" { // the reads of the recap check
+			fakeawx.JSON(w, 200, map[string]any{"count": 0, "results": []any{}})
+			return
+		}
 		asked = r.URL.RawQuery
 		fakeawx.JSON(w, 200, map[string]any{"count": 6, "results": []map[string]any{
 			ev("runner_on_ok", "web1", "Patch", "Install", "t1", true, "00:00.000000", "00:10.000000"),
@@ -236,12 +240,180 @@ func TestJobTiming(t *testing.T) {
 		want string
 		args []string
 	}{
-		{"--by is task, play or host", []string{"get", "job-timing", "710", "--by", "role"}},
+		{"--by is task, play, role or host", []string{"get", "job-timing", "710", "--by", "weekday"}},
 		{"--sort is run", []string{"get", "job-timing", "710", "--sort", "name"}},
 		{"only a playbook run", []string{"get", "job-timing", "711"}},
 	} {
 		if _, errOut, code := runCLI(t, env, c.args...); code != 5 || !strings.Contains(errOut, c.want) {
 			t.Errorf("%v: %d %s (want %q)", c.args, code, errOut, c.want)
 		}
+	}
+}
+
+// A play that runs its hosts in serial batches repeats every task under the same
+// task ID. Each batch is a row of its own; merged, the wall clock of the task
+// would span everything that ran between the batches.
+func TestJobTimingSerialBatchesRolesAndSummary(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/unified_jobs/", map[string]any{"id": 720, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 720, "name": "Rolling", "status": "failed", "elapsed": 700.5})
+	n := 0
+	ev := func(event, host, playID, role, task, taskID string, changed bool, start, end string) map[string]any {
+		n++
+		return map[string]any{"id": n, "counter": n, "event": event, "host_name": host, "play": "Rolling restart", "role": role, "task": task, "changed": changed,
+			"event_data": map[string]any{"task_uuid": taskID, "play_uuid": playID, "start": "2026-03-01T10:" + start, "end": "2026-03-01T10:" + end}}
+	}
+	srv.Handle("/jobs/720/job_events/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 7, "results": []map[string]any{
+			// batch 1: web1
+			ev("runner_on_ok", "web1", "batch-1", "reboot", "Reboot", "t1", true, "00:00.000000", "01:00.000000"),
+			ev("runner_on_ok", "web1", "batch-1", "reboot", "Wait for the host", "t2", false, "01:00.000000", "03:00.000000"),
+			ev("runner_on_skipped", "web1", "batch-1", "", "Notify", "t3", false, "03:00.000000", "03:00.100000"),
+			// batch 2: web2, the same tasks again, five minutes later
+			ev("runner_on_ok", "web2", "batch-2", "reboot", "Reboot", "t1", true, "05:00.000000", "06:00.000000"),
+			ev("runner_on_failed", "web2", "batch-2", "reboot", "Wait for the host", "t2", false, "06:00.000000", "11:00.000000"),
+		}})
+	})
+	out, errOut, code := runCLI(t, env, "get", "job-timing", "720")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	rows, meta := decode(t, out)
+	if len(rows) != 5 {
+		t.Fatalf("one row per task per batch: %d rows %v", len(rows), rows)
+	}
+	w1, w2 := rows[1], rows[4]
+	if w1["task"] != "Wait for the host" || w1["wall_seconds"] != 120.0 || w1["hosts"] != 1.0 || w1["play_run"] != 1.0 ||
+		w2["task"] != "Wait for the host" || w2["wall_seconds"] != 300.0 || w2["play_run"] != 2.0 || w2["failed"] != 1.0 {
+		t.Errorf("the two batches of one task, each with its own wall clock:\n%v\n%v", w1, w2)
+	}
+	// What the time went on: each task once, under one heading.
+	sum, _ := meta["summary"].(map[string]any)
+	secs, _ := sum["seconds_by_outcome"].(map[string]any)
+	counts, _ := sum["tasks_by_outcome"].(map[string]any)
+	if secs["changed"] != 120.0 || secs["unchanged"] != 120.0 || secs["failed"] != 300.0 || secs["skipped"] != 0.1 || sum["task_seconds"] != 540.1 || sum["job_seconds"] != 700.5 ||
+		counts["changed"] != 2.0 || counts["failed"] != 1.0 || counts["skipped"] != 1.0 || counts["unchanged"] != 1.0 {
+		t.Errorf("summary: %v", sum)
+	}
+	// Per role: the role's tasks summed over both batches; tasks outside a role apart.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "720", "--by", "role")
+	rows, meta = decode(t, out)
+	if len(rows) != 2 || rows[0]["role"] != "reboot" || rows[0]["wall_seconds"] != 540.0 || rows[0]["tasks"] != 4.0 || rows[0]["slowest_task"] != "Wait for the host" || rows[0]["changed"] != 2.0 ||
+		rows[1]["role"] != "" || rows[1]["skipped"] != 1.0 {
+		t.Errorf("--by role: %v", rows)
+	}
+	if s2, _ := meta["summary"].(map[string]any); s2["task_seconds"] != 540.1 {
+		t.Errorf("the summary is about the run, whatever the grouping: %v", meta["summary"])
+	}
+	// --by play: the two batches are two runs of the play.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "720", "--by", "play")
+	if rows, _ = decode(t, out); len(rows) != 2 || rows[0]["play_run"] != 1.0 || rows[1]["play_run"] != 2.0 || rows[1]["wall_seconds"] != 360.0 {
+		t.Errorf("--by play: %v", rows)
+	}
+	out, errOut, _ = runCLI(t, env, "get", "job-timing", "720", "-o", "table")
+	if !strings.Contains(errOut, "summary: 5 tasks, 540 s in tasks: changed 120 s (22%, 2 tasks)") || !strings.Contains(out, "RUN") {
+		t.Errorf("the table view:\n%s\n%s", out, errOut)
+	}
+	// With --host the summary says it is partial.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "720", "--host", "web1")
+	if _, meta = decode(t, out); meta["summary"].(map[string]any)["partial"] == nil || meta["summary"].(map[string]any)["job_seconds"] != nil {
+		t.Errorf("--host: %v", meta["summary"])
+	}
+}
+
+// The task results, counted the way Ansible's recap counts, agree with the
+// run's own count per host; when they do not, the summary says on which hosts.
+func TestJobTimingRecapCheck(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/unified_jobs/", map[string]any{"id": 730, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 730, "name": "Patch", "status": "successful", "elapsed": 60.0})
+	n := 0
+	ev := func(event, host, task, action string, changed bool, extra map[string]any) map[string]any {
+		n++
+		data := map[string]any{"task_uuid": task, "play_uuid": "p1", "task_action": action, "start": "2026-03-01T10:00:00.000000", "end": "2026-03-01T10:00:01.000000"}
+		for k, v := range extra {
+			data[k] = v
+		}
+		return map[string]any{"id": n, "counter": n, "event": event, "host_name": host, "play": "Patch", "task": task, "changed": changed, "event_data": data}
+	}
+	results := []map[string]any{
+		ev("runner_on_ok", "web1", "install", "package", true, nil),
+		ev("runner_on_ok", "web1", "facts", "setup", false, nil),
+		// a skipped meta task is reported, but the recap does not count it
+		ev("runner_on_skipped", "web1", "stop here", "ansible.builtin.meta", false, nil),
+		ev("runner_on_skipped", "web1", "optional", "command", false, nil),
+		// a failure that is ignored is "ok" in the recap, not "failed"
+		ev("runner_on_failed", "web1", "probe", "command", false, map[string]any{"ignore_errors": true}),
+		// include_role leaves a task result AND an include: counted once
+		ev("runner_on_ok", "web1", "role", "ansible.builtin.include_role", false, nil),
+		// a loop whose item changed something, while the task's own result is not "changed"
+		ev("runner_on_failed", "web1", "loop", "copy", false, map[string]any{"ignore_errors": true}),
+		ev("runner_on_ok", "web2", "install", "package", false, nil),
+		ev("runner_on_failed", "web2", "probe", "command", false, nil),
+		ev("runner_on_unreachable", "web3", "install", "package", false, nil),
+		ev("runner_on_ok", "web4", "install", "package", false, nil),
+	}
+	includes := []map[string]any{
+		{"id": 900, "counter": 900, "event": "playbook_on_include", "play": "Patch", "task": "role", "stdout": "included: /runner/project/roles/x/tasks/main.yml for web1", "event_data": map[string]any{"task_uuid": "role"}},
+		// include_tasks: no task result, one "ok" per host named; a looped include names the item
+		{"id": 901, "counter": 901, "event": "playbook_on_include", "play": "Patch", "task": "more", "stdout": "\x1b[0;36mincluded: /runner/project/more.yml for web1, web2 => (item=a)\x1b[0m", "event_data": map[string]any{"task_uuid": "more"}},
+	}
+	items := []map[string]any{
+		{"id": 950, "counter": 950, "event": "runner_item_on_ok", "host_name": "web1", "changed": true, "play": "Patch", "task": "loop", "event_data": map[string]any{"task_uuid": "loop"}},
+		// an item of a task that says "changed" itself adds nothing
+		{"id": 951, "counter": 951, "event": "runner_item_on_ok", "host_name": "web1", "changed": true, "play": "Patch", "task": "install", "event_data": map[string]any{"task_uuid": "install"}},
+	}
+	srv.Handle("/jobs/730/job_events/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		list := results
+		switch {
+		case q.Get("event") == "playbook_on_include":
+			list = includes
+		case q.Get("event") == "runner_item_on_ok":
+			if q.Get("changed") != "true" {
+				t.Errorf("only the changed items are read: %s", r.URL.RawQuery)
+			}
+			list = items
+		}
+		fakeawx.JSON(w, 200, map[string]any{"count": len(list), "results": list})
+	})
+	recap := []map[string]any{
+		// web1: ok = install + facts + probe (ignored) + role (once) + loop (ignored) + include of more.yml = 6
+		{"host_name": "web1", "ok": 6, "changed": 2, "failures": 0, "skipped": 1, "dark": 0, "ignored": 2},
+		{"host_name": "web2", "ok": 2, "changed": 0, "failures": 1, "skipped": 0, "dark": 0},
+		{"host_name": "web3", "ok": 0, "changed": 0, "failures": 0, "skipped": 0, "dark": 1},
+		// a rescue cannot be read from the events with certainty: left out, not called a mismatch
+		{"host_name": "web4", "ok": 3, "changed": 0, "failures": 0, "skipped": 0, "dark": 0, "rescued": 1},
+	}
+	srv.Handle("/jobs/730/job_host_summaries/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": len(recap), "results": recap})
+	})
+	check := func() map[string]any {
+		t.Helper()
+		out, errOut, code := runCLI(t, env, "get", "job-timing", "730")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		_, meta := decode(t, out)
+		rc, _ := meta["summary"].(map[string]any)["recap_check"].(map[string]any)
+		return rc
+	}
+	if rc := check(); rc["matches"] != true || rc["hosts"] != 4.0 || rc["hosts_matching"] != 3.0 || rc["hosts_unverifiable"] != 1.0 {
+		t.Errorf("every rule applied, the three verifiable hosts agree: %v", rc)
+	}
+	// A result that went missing shows as a host that does not add up.
+	recap[1]["ok"] = 5
+	rc := check()
+	if rc["matches"] != false || rc["hosts_differing"] != 1.0 || !strings.Contains(fmt.Sprint(rc["first_differences"]), "web2") || !strings.Contains(fmt.Sprint(rc["first_differences"]), "recap:5") {
+		t.Errorf("a host that does not add up is named: %v", rc)
+	}
+	_, errOut, _ := runCLI(t, env, "get", "job-timing", "730", "-o", "table")
+	if !strings.Contains(errOut, "on 1 of 4 hosts the task results do not add up") {
+		t.Errorf("a person is told too: %s", errOut)
+	}
+	// A run that has not finished has no recap to compare with.
+	srv.Collection("/jobs/")[len(srv.Collection("/jobs/"))-1]["status"] = "running"
+	if rc := check(); rc != nil {
+		t.Errorf("no check while the job runs: %v", rc)
 	}
 }

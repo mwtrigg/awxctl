@@ -150,6 +150,10 @@ var Total int
 // reported too ("how many failed jobs": none).
 var TotalKnown bool
 
+// Summary, when set, is a small result about the rows as a whole (totals a
+// reader would otherwise add up). In JSON it is meta.summary.
+var Summary map[string]any
+
 // Notes are remarks about the result that a reader must not miss ("two hosts
 // share this name"). In JSON they are meta.notes, so that standard output stays
 // one JSON document whatever a caller does with standard error; in the other
@@ -327,6 +331,9 @@ func printJSON(_ []Column, rows []map[string]any) error {
 	}
 	if len(Notes) > 0 {
 		meta["notes"] = Notes
+	}
+	if Summary != nil {
+		meta["summary"] = Summary
 	}
 	envelope := map[string]any{"data": rows, "meta": meta}
 	enc := json.NewEncoder(os.Stdout)

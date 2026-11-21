@@ -6,6 +6,21 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+### Added
+- `get job-timing --by role`: the time per role, summed over the plays and batches that use it.
+- `get job-timing`: `meta.summary` says what the run's time was spent on, each task counted once
+  with its wall clock: changed, unchanged (a no-op for this run), skipped and failed; with the
+  run's own runtime next to it. As a table the summary is a line on standard error.
+- `get job-timing`: `meta.summary.recap_check` compares the task results, host by host, with
+  the run's own recap, counted the way Ansible counts (includes, ignored failures, skipped meta
+  tasks, loop items that changed): when every host matches, no task result is missing.
+- `get job-timing`: `play_run` on task and play rows, and a PLAY column in the task table.
+
+### Fixed
+- `get job-timing`: a task of a play that runs its hosts in serial batches was one row for all
+  batches, with a wall clock that spanned whatever ran between them. Each batch is now a row of
+  its own.
+
 ## [1.3.0] - 2026-11-21
 
 ### Added
