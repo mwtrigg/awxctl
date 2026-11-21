@@ -282,7 +282,8 @@ var jobTimingCmd = &cobra.Command{
 Per task: wall_seconds (first start to last end over all hosts), host_seconds
 (the sum over hosts, more than the wall clock when hosts run side by side),
 slowest_seconds and slowest_host, and how many hosts changed, were unchanged,
-failed or were skipped. --by host turns it round: per host, the time it used and
+failed or were skipped (a looped task counts as changed on a host when any of
+its items changed something). --by host turns it round: per host, the time it used and
 its slowest task. A play that runs its hosts in serial batches runs every task
 once per batch: each is a row of its own, and play_run says which batch.
 
@@ -337,27 +338,37 @@ in any task result: the tasks' wall clocks add up to less than the run.`,
 		if err != nil {
 			return err
 		}
-		rows := core.Timing(evs, by)
+		// The items of loops that changed something: a looped task can end "not
+		// changed" although its items did change things.
+		iq := url.Values{"event": {"runner_item_on_ok"}, "changed": {"true"}, "order_by": {"counter"}}
+		for _, k := range []string{"host_name", "task__icontains"} {
+			if v := q.Get(k); v != "" {
+				iq.Set(k, v)
+			}
+		}
+		items, _, err := client.List(cmd.Context(), j.EventsPath(), iq, 0)
+		if err != nil {
+			return err
+		}
+		rows := core.Timing(evs, items, by)
 		// The summary is about the run, whatever the rows are grouped by.
 		tasks := rows
 		if by != "task" {
-			tasks = core.Timing(evs, "task")
+			tasks = core.Timing(evs, items, "task")
 		}
 		summary := core.TimingSummary(tasks)
 		if evHost == "" && evTask == "" {
 			if secs, ok := j.Obj["elapsed"]; ok {
 				summary["job_seconds"] = secs
 			}
-			// Three more reads, to see that no task result is missing from the
-			// above: the run's own count per host, and the two things that count
-			// reads differently from the task results (includes, and items of a
-			// loop that changed something). Best effort: a controller that
-			// cannot answer one of them gets no check, not an error.
+			// Two more reads, to see that no task result is missing from the
+			// above: the run's own count per host, and the includes, which the
+			// recap counts and the task results do not show. Best effort: a
+			// controller that cannot answer one of them gets no check, not an error.
 			evPath := j.EventsPath()
 			sums, _, e1 := client.List(cmd.Context(), j.Path+"job_host_summaries/", nil, 0)
 			incl, _, e2 := client.List(cmd.Context(), evPath, url.Values{"event": {"playbook_on_include"}, "order_by": {"counter"}}, 0)
-			items, _, e3 := client.List(cmd.Context(), evPath, url.Values{"event": {"runner_item_on_ok"}, "changed": {"true"}, "order_by": {"counter"}}, 0)
-			if e1 == nil && e2 == nil && e3 == nil && core.Finished(j.Status()) {
+			if e1 == nil && e2 == nil && core.Finished(j.Status()) {
 				summary["recap_check"] = core.RecapCheck(evs, incl, items, sums)
 			}
 		} else {
