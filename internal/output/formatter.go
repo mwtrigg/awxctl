@@ -150,6 +150,15 @@ var Total int
 // reported too ("how many failed jobs": none).
 var TotalKnown bool
 
+// Notes are remarks about the result that a reader must not miss ("two hosts
+// share this name"). In JSON they are meta.notes, so that standard output stays
+// one JSON document whatever a caller does with standard error; in the other
+// formats they go to standard error. Add them with Note.
+var Notes []string
+
+// Note records a remark about the result being printed.
+func Note(format string, args ...any) { Notes = append(Notes, fmt.Sprintf(format, args...)) }
+
 // Fetched is the number of rows the API returned, when that is not the number of rows
 // printed (grouped output prints groups, not the rows that were limited). 0 = use the
 // printed rows.
@@ -238,6 +247,11 @@ func Print(format Format, columns []Column, rows []map[string]any) error {
 			return err
 		}
 	}
+	if format != FormatJSON {
+		for _, n := range Notes {
+			fmt.Fprintln(os.Stderr, "note: "+n)
+		}
+	}
 	if format != FormatJSON && limitReached(rows) {
 		fmt.Fprintf(os.Stderr, "note: showing %d rows, the limit; there may be more (raise --limit, or --limit -1 for all)\n", Limit)
 	}
@@ -310,6 +324,9 @@ func printJSON(_ []Column, rows []map[string]any) error {
 	if Limit > 0 {
 		meta["limit"] = Limit
 		meta["limit_reached"] = limitReached(rows) // true: there may be more rows; raise --limit (-1 for all)
+	}
+	if len(Notes) > 0 {
+		meta["notes"] = Notes
 	}
 	envelope := map[string]any{"data": rows, "meta": meta}
 	enc := json.NewEncoder(os.Stdout)

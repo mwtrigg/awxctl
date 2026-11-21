@@ -173,9 +173,10 @@ About jobs:
 
 | Command | Answers |
 |---|---|
-| `diagnose job <id>` | why it failed, best effort: verdict, each distinct failure with its role, task, file and hosts; where a job stopped and why (timeout, cancel, play ended early); error lines from the output; workflow nodes. `--compare-last-success` adds what differs from the last good run of the template (revision, limit, inventory, variables by name, host count, runtime) |
+| `diagnose job <id>` | why it failed, best effort: verdict, each distinct failure with its role, task, file and hosts; where a job stopped and why (timeout, cancel, play ended early); error lines from the output; workflow nodes. `--compare-last-success` adds what differs from the last good run of the template (revision, limit, inventory, variables by name, host count, runtime); `--recursive` follows a workflow's failed nodes, through workflows inside it, to the jobs that failed |
 | `get job-output <id>` | the output, narrowed with `--tail`, `--head`, `--grep`/`--context`, saved with `--save`, streamed with `--follow --text` |
-| `get job-events <id>` | task results: `--failed`, `--changed`, `--host`, `--task` |
+| `get job-events <id>` | task results with the seconds each took: `--failed`, `--changed`, `--host`, `--task`; `--slowest N` for the slowest of the run |
+| `get job-timing <id>` | where the run's time went: per task (wall clock, host time, slowest host, changed or not), `--by play`, `--by host`; `--sort wall` |
 | `get job-hosts <id>` | per-host counts (ok, changed, failures, unreachable) |
 | `get host-jobs <host>` | the jobs that ran against a host, with the host's result and the job's runtime (`--template`, `--failed`, `--since`) |
 | `get host-output <host>` | one host's part of a job's output: the last job, the last of `--template`, or `--job` |

@@ -6,6 +6,25 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+### Added
+- `get job-events`: every task result has a `duration` (seconds on that host), and
+  `--slowest N` returns the slowest task results of a run, slowest first: which host held the
+  play.
+- `get job-timing`: where a run's time went, one row per task (wall clock, host time, slowest
+  host, how many hosts changed or not), per play (`--by play`) or per host (`--by host`).
+- `diagnose job --recursive`: for a workflow, follows the nodes that did not succeed, also
+  through workflows inside it, and diagnoses the jobs at the end (`leaf_failures`); the verdict
+  names the first.
+
+### Fixed
+- `wait`: a wait that ran out while a poll was on its way exited 1 with "context deadline
+  exceeded" instead of 9 (still running).
+
+### Changed
+- Notes about a result (two hosts sharing a name in `get host-jobs`) are part of the JSON, as
+  `meta.notes`, instead of a line on standard error, so that a caller reading both streams
+  still gets one JSON document. Table, CSV and JSONL output still send them to standard error.
+
 ## [1.2.1] - 2026-11-17
 
 ### Changed
