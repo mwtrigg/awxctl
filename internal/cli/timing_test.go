@@ -236,12 +236,83 @@ func TestJobTiming(t *testing.T) {
 		want string
 		args []string
 	}{
-		{"--by is task, play or host", []string{"get", "job-timing", "710", "--by", "role"}},
+		{"--by is task, play, role or host", []string{"get", "job-timing", "710", "--by", "weekday"}},
 		{"--sort is run", []string{"get", "job-timing", "710", "--sort", "name"}},
 		{"only a playbook run", []string{"get", "job-timing", "711"}},
 	} {
 		if _, errOut, code := runCLI(t, env, c.args...); code != 5 || !strings.Contains(errOut, c.want) {
 			t.Errorf("%v: %d %s (want %q)", c.args, code, errOut, c.want)
 		}
+	}
+}
+
+// A play that runs its hosts in serial batches repeats every task under the same
+// task ID. Each batch is a row of its own; merged, the wall clock of the task
+// would span everything that ran between the batches.
+func TestJobTimingSerialBatchesRolesAndSummary(t *testing.T) {
+	srv, env := lab(t, "awx", "readonly")
+	srv.Add("/unified_jobs/", map[string]any{"id": 720, "type": "job"})
+	srv.Add("/jobs/", map[string]any{"id": 720, "name": "Rolling", "status": "failed", "elapsed": 700.5})
+	n := 0
+	ev := func(event, host, playID, role, task, taskID string, changed bool, start, end string) map[string]any {
+		n++
+		return map[string]any{"id": n, "counter": n, "event": event, "host_name": host, "play": "Rolling restart", "role": role, "task": task, "changed": changed,
+			"event_data": map[string]any{"task_uuid": taskID, "play_uuid": playID, "start": "2026-03-01T10:" + start, "end": "2026-03-01T10:" + end}}
+	}
+	srv.Handle("/jobs/720/job_events/", func(w http.ResponseWriter, _ *http.Request) {
+		fakeawx.JSON(w, 200, map[string]any{"count": 7, "results": []map[string]any{
+			// batch 1: web1
+			ev("runner_on_ok", "web1", "batch-1", "reboot", "Reboot", "t1", true, "00:00.000000", "01:00.000000"),
+			ev("runner_on_ok", "web1", "batch-1", "reboot", "Wait for the host", "t2", false, "01:00.000000", "03:00.000000"),
+			ev("runner_on_skipped", "web1", "batch-1", "", "Notify", "t3", false, "03:00.000000", "03:00.100000"),
+			// batch 2: web2, the same tasks again, five minutes later
+			ev("runner_on_ok", "web2", "batch-2", "reboot", "Reboot", "t1", true, "05:00.000000", "06:00.000000"),
+			ev("runner_on_failed", "web2", "batch-2", "reboot", "Wait for the host", "t2", false, "06:00.000000", "11:00.000000"),
+		}})
+	})
+	out, errOut, code := runCLI(t, env, "get", "job-timing", "720")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	rows, meta := decode(t, out)
+	if len(rows) != 5 {
+		t.Fatalf("one row per task per batch: %d rows %v", len(rows), rows)
+	}
+	w1, w2 := rows[1], rows[4]
+	if w1["task"] != "Wait for the host" || w1["wall_seconds"] != 120.0 || w1["hosts"] != 1.0 || w1["play_run"] != 1.0 ||
+		w2["task"] != "Wait for the host" || w2["wall_seconds"] != 300.0 || w2["play_run"] != 2.0 || w2["failed"] != 1.0 {
+		t.Errorf("the two batches of one task, each with its own wall clock:\n%v\n%v", w1, w2)
+	}
+	// What the time went on: each task once, under one heading.
+	sum, _ := meta["summary"].(map[string]any)
+	secs, _ := sum["seconds_by_outcome"].(map[string]any)
+	counts, _ := sum["tasks_by_outcome"].(map[string]any)
+	if secs["changed"] != 120.0 || secs["unchanged"] != 120.0 || secs["failed"] != 300.0 || secs["skipped"] != 0.1 || sum["task_seconds"] != 540.1 || sum["job_seconds"] != 700.5 ||
+		counts["changed"] != 2.0 || counts["failed"] != 1.0 || counts["skipped"] != 1.0 || counts["unchanged"] != 1.0 {
+		t.Errorf("summary: %v", sum)
+	}
+	// Per role: the role's tasks summed over both batches; tasks outside a role apart.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "720", "--by", "role")
+	rows, meta = decode(t, out)
+	if len(rows) != 2 || rows[0]["role"] != "reboot" || rows[0]["wall_seconds"] != 540.0 || rows[0]["tasks"] != 4.0 || rows[0]["slowest_task"] != "Wait for the host" || rows[0]["changed"] != 2.0 ||
+		rows[1]["role"] != "" || rows[1]["skipped"] != 1.0 {
+		t.Errorf("--by role: %v", rows)
+	}
+	if s2, _ := meta["summary"].(map[string]any); s2["task_seconds"] != 540.1 {
+		t.Errorf("the summary is about the run, whatever the grouping: %v", meta["summary"])
+	}
+	// --by play: the two batches are two runs of the play.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "720", "--by", "play")
+	if rows, _ = decode(t, out); len(rows) != 2 || rows[0]["play_run"] != 1.0 || rows[1]["play_run"] != 2.0 || rows[1]["wall_seconds"] != 360.0 {
+		t.Errorf("--by play: %v", rows)
+	}
+	out, errOut, _ = runCLI(t, env, "get", "job-timing", "720", "-o", "table")
+	if !strings.Contains(errOut, "summary: 5 tasks, 540 s in tasks: changed 120 s (22%, 2 tasks)") || !strings.Contains(out, "RUN") {
+		t.Errorf("the table view:\n%s\n%s", out, errOut)
+	}
+	// With --host the summary says it is partial.
+	out, _, _ = runCLI(t, env, "get", "job-timing", "720", "--host", "web1")
+	if _, meta = decode(t, out); meta["summary"].(map[string]any)["partial"] == nil || meta["summary"].(map[string]any)["job_seconds"] != nil {
+		t.Errorf("--host: %v", meta["summary"])
 	}
 }

@@ -275,6 +275,7 @@ var jobTimingCmd = &cobra.Command{
   awxctl get job-timing 1234 -o table              # one row per task, in the order they ran
   awxctl get job-timing 1234 --sort wall --limit 10   # the ten tasks that took longest
   awxctl get job-timing 1234 --by play
+  awxctl get job-timing 1234 --by role             # time per role, for "which role costs us"
   awxctl get job-timing 1234 --by host             # which hosts cost the most time
   awxctl get job-timing 1234 --changed             # only tasks that changed something
 
@@ -282,7 +283,14 @@ Per task: wall_seconds (first start to last end over all hosts), host_seconds
 (the sum over hosts, more than the wall clock when hosts run side by side),
 slowest_seconds and slowest_host, and how many hosts changed, were unchanged,
 failed or were skipped. --by host turns it round: per host, the time it used and
-its slowest task.
+its slowest task. A play that runs its hosts in serial batches runs every task
+once per batch: each is a row of its own, and play_run says which batch.
+
+meta.summary says what the run's time was spent on, each task counted once with
+its wall clock: changed (a host changed something), failed (none changed, one
+failed), skipped (every host skipped it) and unchanged (it ran and changed
+nothing: a no-op for this run). job_seconds is the run's own runtime; what the
+tasks do not account for is time between tasks.
 
 The whole run is read (one request per 200 task results), so a very large run
 takes a moment. Time between tasks (gathering, waiting for a free fork) is not
@@ -296,8 +304,8 @@ in any task result: the tasks' wall clocks add up to less than the run.`,
 		by, _ := cmd.Flags().GetString("by")
 		sortBy, _ := cmd.Flags().GetString("sort")
 		onlyChanged, _ := cmd.Flags().GetBool("changed")
-		if by != "task" && by != "play" && by != "host" {
-			return &usageError{"--by is task, play or host"}
+		if by != "task" && by != "play" && by != "host" && by != "role" {
+			return &usageError{"--by is task, play, role or host"}
 		}
 		keys := map[string]string{"run": "", "wall": "wall_seconds", "host-time": "host_seconds", "slowest": "slowest_seconds"}
 		sortKey, ok := keys[sortBy]
@@ -327,6 +335,20 @@ in any task result: the tasks' wall clocks add up to less than the run.`,
 			return err
 		}
 		rows := core.Timing(evs, by)
+		// The summary is about the run, whatever the rows are grouped by.
+		tasks := rows
+		if by != "task" {
+			tasks = core.Timing(evs, "task")
+		}
+		summary := core.TimingSummary(tasks)
+		if evHost == "" && evTask == "" {
+			if secs, ok := j.Obj["elapsed"]; ok {
+				summary["job_seconds"] = secs
+			}
+		} else {
+			summary["partial"] = "only the results that --host and --task select"
+		}
+		output.Summary = summary
 		if onlyChanged {
 			kept := rows[:0]
 			for _, r := range rows {
@@ -357,14 +379,35 @@ in any task result: the tasks' wall clocks add up to less than the run.`,
 		switch by {
 		case "host":
 			cols = []output.Column{{Key: "host", Header: "HOST"}, {Key: "host_seconds", Header: "SECONDS"}, {Key: "tasks", Header: "TASKS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_task", Header: "SLOWEST TASK"}}
+		case "role":
+			cols = []output.Column{{Key: "role", Header: "ROLE"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "tasks", Header: "TASKS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_task", Header: "SLOWEST TASK"}}
 		case "play":
-			cols = []output.Column{{Key: "play", Header: "PLAY"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "tasks", Header: "TASKS"}, {Key: "hosts", Header: "HOSTS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_host", Header: "SLOWEST HOST"}}
+			cols = []output.Column{{Key: "play", Header: "PLAY"}, {Key: "play_run", Header: "RUN"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "tasks", Header: "TASKS"}, {Key: "hosts", Header: "HOSTS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_host", Header: "SLOWEST HOST"}}
 		default:
-			cols = []output.Column{{Key: "task", Header: "TASK"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "hosts", Header: "HOSTS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_host", Header: "SLOWEST HOST"}}
+			cols = []output.Column{{Key: "play", Header: "PLAY"}, {Key: "play_run", Header: "RUN"}, {Key: "task", Header: "TASK"}, {Key: "wall_seconds", Header: "WALL S"}, {Key: "host_seconds", Header: "HOST S"}, {Key: "hosts", Header: "HOSTS"}, {Key: "slowest_seconds", Header: "SLOWEST S"}, {Key: "slowest_host", Header: "SLOWEST HOST"}}
 		}
 		cols = append(cols, output.Column{Key: "changed", Header: "CHANGED"}, output.Column{Key: "unchanged", Header: "UNCHANGED"}, output.Column{Key: "failed", Header: "FAILED"}, output.Column{Key: "skipped", Header: "SKIPPED"})
+		if output.Format(flagOutput) != output.FormatJSON {
+			printTimingSummary(summary)
+		}
 		return output.Print(output.Format(flagOutput), cols, rows)
 	},
+}
+
+// printTimingSummary writes the summary for a person, to standard error: in
+// JSON it is meta.summary.
+func printTimingSummary(sum map[string]any) {
+	secs, _ := sum["seconds_by_outcome"].(map[string]float64)
+	count, _ := sum["tasks_by_outcome"].(map[string]int)
+	total, _ := sum["task_seconds"].(float64)
+	if secs == nil || total == 0 {
+		return
+	}
+	line := fmt.Sprintf("summary: %d tasks, %.0f s in tasks:", sum["tasks"], total)
+	for _, k := range []string{"changed", "unchanged", "skipped", "failed"} {
+		line += fmt.Sprintf(" %s %.0f s (%.0f%%, %d tasks);", k, secs[k], 100*secs[k]/total, count[k])
+	}
+	fmt.Fprintln(os.Stderr, strings.TrimSuffix(line, ";"))
 }
 
 var hostJobsCmd = &cobra.Command{
@@ -788,7 +831,7 @@ func init() {
 	launchInfoCmd.Flags().Bool("workflow", false, "the template is a workflow template")
 	workflowNodesCmd.Flags().String("template", "", "show the nodes of this workflow template instead of a workflow job")
 
-	jobTimingCmd.Flags().String("by", "task", "one row per task, play or host")
+	jobTimingCmd.Flags().String("by", "task", "one row per task, play, role or host")
 	jobTimingCmd.Flags().String("sort", "run", "run (the order they ran), wall, host-time or slowest; longest first")
 	jobTimingCmd.Flags().Bool("changed", false, "only rows where something changed")
 	jobTimingCmd.Flags().StringVar(&evHost, "host", "", "only this host's results")
