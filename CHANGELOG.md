@@ -6,6 +6,11 @@ incompatibly only with a new major version. The release notes are taken from thi
 
 ## [Unreleased]
 
+### Changed
+- `upgrade` no longer asks for confirmation or `--apply`: `awxctl upgrade` installs the latest
+  release (signature and checksums verified as before). `--check`, or `--dry-run`, only looks.
+  `--apply` and `--yes` are still accepted and change nothing.
+
 ## [1.4.0] - 2026-11-21
 
 ### Added
